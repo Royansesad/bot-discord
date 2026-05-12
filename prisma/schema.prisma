@@ -1,0 +1,154 @@
+// ============================================
+// Prisma Schema - Discord Bot Database
+// ============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// Admin & Audit Models
+// ============================================
+
+/// Log setiap aksi admin untuk audit trail
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  guildId   String
+  moderator String   // ID moderator
+  action    String   // kick, ban, mute, warn, etc.
+  targetId  String   // ID target user
+  reason    String?
+  details   String?  // JSON extra details
+  createdAt DateTime @default(now())
+
+  @@index([guildId])
+  @@index([targetId])
+}
+
+/// Warnings yang diberikan ke user
+model Warning {
+  id        Int      @id @default(autoincrement())
+  guildId   String
+  userId    String
+  moderator String
+  reason    String
+  createdAt DateTime @default(now())
+
+  @@index([guildId, userId])
+}
+
+// ============================================
+// RPG Player Models
+// ============================================
+
+/// Profil utama pemain RPG
+model Player {
+  id        Int      @id @default(autoincrement())
+  userId    String   @unique
+  username  String
+  level     Int      @default(1)
+  xp        Int      @default(0)
+  xpToNext  Int      @default(100)
+  gold      Int      @default(100)
+  hp        Int      @default(100)
+  maxHp     Int      @default(100)
+  attack    Int      @default(10)
+  defense   Int      @default(5)
+  critRate  Float    @default(0.05)
+  critDmg   Float    @default(1.5)
+
+  // Equipment slots (item IDs)
+  weaponId  String?
+  armorId   String?
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  inventory   InventoryItem[]
+  cooldowns   Cooldown[]
+  battleLogs  BattleLog[]     @relation("attacker")
+  battlesDef  BattleLog[]     @relation("defender")
+  weeklyBoss  WeeklyBossEntry[]
+}
+
+/// Item di inventory pemain
+model InventoryItem {
+  id       Int    @id @default(autoincrement())
+  playerId Int
+  itemId   String // Reference ke data/items.js
+  quantity Int    @default(1)
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, itemId])
+  @@index([playerId])
+}
+
+/// Cooldown tracker per player per action
+model Cooldown {
+  id        Int      @id @default(autoincrement())
+  playerId  Int
+  action    String   // adventure, daily, weekly, fight, etc.
+  expiresAt DateTime
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, action])
+  @@index([playerId])
+}
+
+/// Log pertarungan antar player atau vs enemy
+model BattleLog {
+  id         Int      @id @default(autoincrement())
+  attackerId Int
+  defenderId Int?     // null jika vs enemy
+  enemyName  String?  // nama enemy jika PvE
+  result     String   // win, lose, draw
+  xpGained   Int      @default(0)
+  goldGained Int      @default(0)
+  loot       String?  // JSON array of item drops
+  details    String?  // JSON battle details / log
+  createdAt  DateTime @default(now())
+
+  attacker Player  @relation("attacker", fields: [attackerId], references: [id])
+  defender Player? @relation("defender", fields: [defenderId], references: [id])
+
+  @@index([attackerId])
+}
+
+/// Tracking weekly boss attempts
+model WeeklyBossEntry {
+  id        Int      @id @default(autoincrement())
+  playerId  Int
+  bossId    String
+  weekStart DateTime // Awal minggu (Monday)
+  attempts  Int      @default(1)
+  lastAttempt DateTime @default(now())
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, bossId, weekStart])
+  @@index([playerId])
+}
+
+// ============================================
+// AI Chat Context
+// ============================================
+
+/// Menyimpan context percakapan AI per user
+model ChatContext {
+  id        Int      @id @default(autoincrement())
+  userId    String
+  role      String   // user atau assistant
+  content   String
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
