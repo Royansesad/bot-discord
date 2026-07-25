@@ -13,6 +13,7 @@ export const data = new SlashCommandBuilder()
         { name: '⚔️ RPG', value: 'rpg' },
         { name: '🛡️ Admin', value: 'admin' },
         { name: '🎉 Fun', value: 'fun' },
+        { name: '🎵 Music', value: 'music' },
       )
   );
 
@@ -34,6 +35,7 @@ export async function execute(interaction, client) {
     rpg: { emoji: '⚔️', title: 'RPG', description: 'Command untuk bermain RPG adventure!' },
     admin: { emoji: '🛡️', title: 'Admin', description: 'Command moderasi server.' },
     fun: { emoji: '🎉', title: 'Fun', description: 'Command hiburan & AI.' },
+    music: { emoji: '🎵', title: 'Music', description: 'Command untuk memutar musik di voice channel!' },
   };
 
   // Jika user memilih kategori tertentu

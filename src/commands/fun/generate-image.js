@@ -32,12 +32,18 @@ export async function execute(interaction, client) {
       embed.setImage('attachment://generated.png');
       await interaction.editReply({ embeds: [embed], files: [attachment] });
     } else if (result.type === 'url') {
-      // APIMart fallback returns URL
+      // Rewind AI fallback returns URL
       embed.setImage(result.data);
       await interaction.editReply({ embeds: [embed] });
+    } else {
+      // Format tidak dikenali — tetap kirim response ke user
+      console.error('Image generation returned unrecognized result type:', result);
+      await interaction.editReply({
+        embeds: [errorEmbed('❌ Image Generation Error', 'Hasil gambar tidak dapat ditampilkan (format tidak dikenali). Coba lagi nanti.')],
+      });
     }
   } catch (error) {
-    console.error('Image generation error:', error);
+    console.error('Image generation error:', error.message || error);
     await interaction.editReply({
       embeds: [errorEmbed('❌ Image Generation Error', error.message || 'Gagal membuat gambar. Coba lagi nanti.')],
     });

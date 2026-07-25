@@ -10,7 +10,19 @@ import { handleCommandError, logError } from '../utils/errorManager.js';
  * Handler utama untuk semua interaction (slash commands, buttons, modals)
  */
 export async function handleInteraction(client, interaction) {
-  // Hanya handle chat input commands - button interactions ditangani oleh collectors
+  // Handle autocomplete interactions
+  if (interaction.isAutocomplete()) {
+    const command = client.commands.get(interaction.commandName);
+    if (!command || !command.autocomplete) return;
+    try {
+      await command.autocomplete(interaction, client);
+    } catch (error) {
+      logError(`Autocomplete (${interaction.commandName})`, error);
+    }
+    return;
+  }
+
+  // Hanya handle chat input commands
   if (!interaction.isChatInputCommand()) return;
 
   const command = client.commands.get(interaction.commandName);

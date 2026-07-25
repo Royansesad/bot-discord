@@ -11,8 +11,8 @@ const config = {
 
   // AI Services (Puter.js = free, no API key needed, just auth token)
   puterAuthToken: process.env.PUTER_AUTH_TOKEN || null,
-  apimartApiKey: process.env.APIMART_API_KEY,
-  apimartBaseUrl: process.env.APIMART_BASE_URL || 'https://api.apimart.dev/v1',
+  rewindApiKey: process.env.REWIND_API_KEY || process.env.REMIND_API_KEY || process.env.APIMART_API_KEY,
+  rewindBaseUrl: process.env.REWIND_BASE_URL || 'https://api.rewind.ai/v1',
 
   // Audit
   auditLogChannelId: process.env.AUDIT_LOG_CHANNEL_ID || null,

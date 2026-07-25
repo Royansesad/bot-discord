@@ -19,6 +19,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates,
   ],
   partials: [Partials.Channel, Partials.GuildMember],
 });
@@ -44,10 +45,14 @@ client.on('error', (error) => {
 });
 
 process.on('unhandledRejection', (error) => {
+  // Skip jika error sudah di-intercept oleh safePuterTxt2Img wrapper
+  if (error?._handled) return;
   logError('Unhandled Rejection', error);
 });
 
 process.on('uncaughtException', (error) => {
+  // Skip jika error sudah di-intercept oleh safePuterTxt2Img wrapper
+  if (error?._handled) return;
   logError('Uncaught Exception', error);
 });
 
