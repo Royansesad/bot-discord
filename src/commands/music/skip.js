@@ -12,13 +12,13 @@ export const data = new SlashCommandBuilder()
 export async function execute(interaction, client) {
   const voiceChannel = interaction.member?.voice?.channel;
   if (!voiceChannel) {
-    return interaction.reply({ embeds: [errorEmbed('❌ Error', 'Kamu harus berada di Voice Channel untuk memakai command ini.')], flags: 64 });
+    return interaction.reply({ embeds: [errorEmbed('❌ Error', 'Kamu harus berada di Voice Channel.')], flags: 64 });
   }
 
   try {
     const skipped = skipTrack(interaction.guildId);
     await interaction.reply({
-      embeds: [successEmbed('⏭️ Lagu Dilewati', `**${skipped.title}** berhasil melewati lagu saat ini.`)],
+      embeds: [successEmbed('⏭️ Lagu Dilewati', `**${skipped.title}** berhasil dilewati.`)],
     });
   } catch (error) {
     await interaction.reply({ embeds: [errorEmbed('❌ Error', error.message)], flags: 64 });

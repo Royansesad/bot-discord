@@ -14,12 +14,13 @@
     "setup": "npm install && npx prisma generate && npx prisma db push"
   },
   "dependencies": {
+    "@discordjs/voice": "^0.19.2",
     "@heyputer/puter.js": "^2.3.2",
     "@prisma/client": "^6.9.0",
     "discord.js": "^14.18.0",
     "dotenv": "^16.5.0",
-    "kazagumo": "^3.4.3",
-    "shoukaku": "^4.3.0",
+    "opusscript": "^0.0.8",
+    "tweetnacl": "^1.0.3",
     "ws": "^8.20.0"
   },
   "devDependencies": {

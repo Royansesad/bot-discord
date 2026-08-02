@@ -12,7 +12,7 @@ export const data = new SlashCommandBuilder()
 export async function execute(interaction, client) {
   const voiceChannel = interaction.member?.voice?.channel;
   if (!voiceChannel) {
-    return interaction.reply({ embeds: [errorEmbed('❌ Error', 'Kamu harus berada di Voice Channel untuk memakai command ini.')], flags: 64 });
+    return interaction.reply({ embeds: [errorEmbed('❌ Error', 'Kamu harus berada di Voice Channel.')], flags: 64 });
   }
 
   try {

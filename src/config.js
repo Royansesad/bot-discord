@@ -61,22 +61,6 @@ const config = {
     rare: 0x3498DB,      // Blue
     common: 0x95A5A6,    // Gray
   },
-
-  // Lavalink Nodes (Zero native build requirements)
-  lavalink: [
-    {
-      name: process.env.LAVALINK_NODE_NAME || 'Lavalink Wiki Node',
-      url: process.env.LAVALINK_NODE_URL || 'lavalink.ptb.discord.wiki:443',
-      auth: process.env.LAVALINK_NODE_AUTH || 'youshallnotpass',
-      secure: process.env.LAVALINK_NODE_SECURE !== 'false',
-    },
-    {
-      name: 'LavaLink Node',
-      url: 'lava.link:80',
-      auth: 'youshallnotpass',
-      secure: false,
-    },
-  ],
 };
 
 // Validasi config kritis
