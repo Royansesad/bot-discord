@@ -9,6 +9,8 @@ import { handleInteraction } from './events/interactionCreate.js';
 import { onReady } from './events/ready.js';
 import { logError } from './utils/errorManager.js';
 
+import { initKazagumo } from './services/musicService.js';
+
 // Inisialisasi Prisma client
 const prisma = new PrismaClient();
 
@@ -29,6 +31,9 @@ client.prisma = prisma;
 
 // Collection untuk menyimpan commands
 client.commands = new Collection();
+
+// Inisialisasi Kazagumo Lavalink Service (Pure JS, zero native C++ deps)
+initKazagumo(client);
 
 // Load semua commands
 await loadCommands(client);
