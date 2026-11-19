@@ -57,6 +57,18 @@ export async function handleInteraction(client, interaction) {
   if (!command) return;
 
   try {
+    // Interaction hanya punya ~3 detik untuk di-acknowledge. Jika event masuk
+    // terlambat (gateway/event loop sibuk), ack sekarang agar sisa proses masih
+    // bisa membalas lewat editReply/followUp.
+    const interactionAge = Date.now() - (interaction.createdTimestamp || Date.now());
+    if (interactionAge > 2000 && !interaction.deferred && !interaction.replied) {
+      const acknowledged = await interaction.deferReply().then(() => true).catch(() => false);
+      if (!acknowledged) {
+        console.warn(`[interaction] /${interaction.commandName} kedaluwarsa sebelum diproses (${interactionAge}ms).`);
+        return;
+      }
+    }
+
     if (command.cooldown) {
       const remaining = await checkCooldown(
         client.prisma,
@@ -72,13 +84,21 @@ export async function handleInteraction(client, interaction) {
           ? `${minutes} menit ${seconds} detik`
           : `${seconds} detik`;
 
-        return interaction.reply({
+        const cooldownPayload = {
           embeds: [errorEmbed(
             '⏳ Cooldown',
             `Kamu harus menunggu **${timeStr}** sebelum menggunakan command ini lagi.`
           )],
           flags: 64,
-        });
+        };
+
+        // Interaction mungkin sudah di-acknowledge lebih awal (deferReply),
+        // sehingga balasan harus lewat editReply.
+        if (interaction.deferred || interaction.replied) {
+          return interaction.editReply(cooldownPayload);
+        }
+
+        return interaction.reply(cooldownPayload);
       }
     }
 

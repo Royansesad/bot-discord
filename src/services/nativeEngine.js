@@ -13,7 +13,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { ProxyAgent } from 'undici';
-import { Innertube, Platform } from 'youtubei.js';
+import { Innertube, Parser, Platform } from 'youtubei.js';
 import {
   AudioPlayerStatus,
   NoSubscriberBehavior,
@@ -29,6 +29,18 @@ import {
 // keamanan. Untuk men-decipher URL format tertentu, sediakan evaluator sendiri.
 // (Referensi: https://ytjs.dev/guide/getting-started.html)
 Platform.shim.eval = async (data) => new Function(data.output)();
+
+// youtubei.js 18.3.0 belum mengenal node "DecoratedAvatarView" yang sekarang
+// dikirim YouTube untuk AvatarStackView (avatar kanal di metadata pencarian).
+// Parser hanya melewati item tersebut, tetapi mencetak warning yang sama
+// berulang kali. Saring warning yang diketahui aman ini; masalah parser lain
+// tetap dicatat agar tidak tersembunyi.
+Parser.setParserErrorHandler((context) => {
+  if (context?.error_type === 'typecheck' && context?.expected === 'AvatarView') return;
+  const detail = context?.error?.message ||
+    `${context?.classname || 'unknown'} (${context?.error_type || 'parse'})`;
+  console.warn('[youtubei.js]', detail);
+});
 
 export const DEFAULT_BANNER = 'https://i.postimg.cc/7Z52mQ0K/Amba-Music.png';
 

@@ -68,15 +68,33 @@ export function createErrorEmbed(type, message, details = null) {
 }
 
 /**
+ * Cek apakah error berasal dari interaction yang sudah kedaluwarsa.
+ * Discord hanya memberi waktu 3 detik untuk acknowledge interaction pertama.
+ */
+export function isInteractionExpired(error) {
+  return (
+    error?.code === 10062 || // Unknown interaction (token sudah tidak valid)
+    error?.code === 40060 || // Interaction has already been acknowledged
+    /Unknown interaction|already been acknowledged/i.test(String(error?.message || ''))
+  );
+}
+
+/**
  * Handle error di command dan kirim pesan ke user
  * Logging ke console + mengirim embed error ke user
  */
 export async function handleCommandError(interaction, error, commandName = null) {
-  // Log error ke console
   const timestamp = new Date().toISOString();
   const userId = interaction.user?.id || 'unknown';
   const cmd = commandName || interaction.commandName || 'unknown';
 
+  // Interaction kedaluwarsa bukan bug bot: cukup catat singkat tanpa stack trace.
+  if (isInteractionExpired(error)) {
+    console.warn(`[${timestamp}] ⚠️ /${cmd} (user: ${userId}): interaction kedaluwarsa sebelum dibalas.`);
+    return;
+  }
+
+  // Log error ke console
   console.error(`[${timestamp}] ❌ Error in /${cmd} (user: ${userId}):`, error);
 
   // Tentukan tipe dan pesan error
@@ -101,9 +119,6 @@ export async function handleCommandError(interaction, error, commandName = null)
   } else if (error?.message?.includes?.('fetch') || error?.message?.includes?.('ECONNREFUSED')) {
     type = ErrorType.NETWORK;
     userMessage = 'Gagal terhubung ke layanan. Silakan coba lagi nanti.';
-  } else if (error?.message?.includes?.('Unknown interaction') || error?.code === 10062) {
-    // Interaction expired, abaikan saja
-    return;
   }
 
   const embed = createErrorEmbed(type, userMessage);

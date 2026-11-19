@@ -1,8 +1,9 @@
-// /play - Memutar lagu di voice channel via Lavalink / NodeLink
+// /play - Memutar lagu di voice channel via Lavalink / NodeLink / Native
 import discordJsPkg from 'discord.js';
 const { SlashCommandBuilder } = discordJsPkg;
 import { playMusic } from '../../services/musicService.js';
 import { errorEmbed } from '../../utils/embeds.js';
+import { isInteractionExpired, logError } from '../../utils/errorManager.js';
 
 export const category = 'music';
 
@@ -21,10 +22,24 @@ export async function execute(interaction, client) {
   try {
     await playMusic(interaction, query);
   } catch (error) {
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply({ embeds: [errorEmbed('❌ Gagal Memutar Musik', error.message)] });
-    } else {
-      await interaction.reply({ embeds: [errorEmbed('❌ Gagal Memutar Musik', error.message)], flags: 64 });
+    // Token interaction hanya berlaku ~3 detik. Jika bot/gateway terlambat,
+    // jangan mencoba reply (pasti gagal) dan jangan menutupi error aslinya.
+    if (isInteractionExpired(error)) {
+      logError('Play (interaction kedaluwarsa)', error);
+      return;
+    }
+
+    const payload = { embeds: [errorEmbed('❌ Gagal Memutar Musik', error.message)] };
+
+    try {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(payload);
+      } else {
+        await interaction.reply({ ...payload, flags: 64 });
+      }
+    } catch (replyError) {
+      if (!isInteractionExpired(replyError)) throw replyError;
+      logError('Play (gagal membalas interaction kedaluwarsa)', error);
     }
   }
 }
