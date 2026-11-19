@@ -5,7 +5,8 @@
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-    "start": "node src/index.js",
+    "start": "node index.js",
+    "postinstall": "prisma generate",
     "dev": "node --watch src/index.js",
     "deploy": "node src/deploy-commands.js",
     "db:generate": "npx prisma generate",
