@@ -5,6 +5,7 @@ yarn-error.log*
 .git
 .gitignore
 .env
+.env.example
 Dockerfile
 .dockerignore
 prisma/*.db
@@ -12,3 +13,7 @@ prisma/*.db-journal
 coverage
 dist/
 bot-discord.zip
+TODO.md
+README.md
+*.md
+!prisma/schema.prisma

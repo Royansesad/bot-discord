@@ -38,20 +38,31 @@ async function deployCommands() {
   try {
     console.log(`\n🔄 Mendaftarkan ${commands.length} slash commands...`);
 
-    if (config.guildId) {
-      // Deploy ke guild tertentu (instant, untuk testing)
+    const isGlobalOnly = process.argv.includes('--global-only');
+    const isGuildOnly = process.argv.includes('--guild-only');
+
+    if (isGuildOnly && config.guildId) {
       await rest.put(
         Routes.applicationGuildCommands(config.clientId, config.guildId),
         { body: commands }
       );
       console.log(`✅ ${commands.length} commands berhasil didaftarkan ke guild ${config.guildId}`);
     } else {
-      // Deploy global (bisa butuh ~1 jam untuk update)
+      // Deploy Global (agar muncul di SEMUA server & akun pengguna)
       await rest.put(
         Routes.applicationCommands(config.clientId),
         { body: commands }
       );
-      console.log(`✅ ${commands.length} commands berhasil didaftarkan secara global`);
+      console.log(`🌐 ${commands.length} commands berhasil didaftarkan secara GLOBAL (semua server/user)!`);
+
+      // Juga deploy ke guild tertentu jika GUILD_ID diset (untuk update instan di dev server)
+      if (config.guildId && !isGlobalOnly) {
+        await rest.put(
+          Routes.applicationGuildCommands(config.clientId, config.guildId),
+          { body: commands }
+        );
+        console.log(`⚡ ${commands.length} commands juga berhasil di-sync instan ke guild ${config.guildId}`);
+      }
     }
   } catch (error) {
     console.error('❌ Gagal mendaftarkan commands:', error);

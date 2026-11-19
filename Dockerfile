@@ -1,27 +1,24 @@
-# Use an official Node.js runtime as a parent image
-FROM node:20-slim
+# Node 22 slim — @discordjs/voice (engine native) butuh Node >= 22.12
+FROM node:22-slim
 
-# Install OpenSSL (required by Prisma)
-RUN apt-get update -y && apt-get install -y openssl
+# OpenSSL untuk Prisma + ca-certificates untuk fetch HTTPS
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends openssl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
-# Set the working directory
 WORKDIR /app
 
-# Copy package.json and package-lock.json
-COPY package*.json ./
+# Copy dependency files dulu (layer cache)
+COPY package.json package-lock.json ./
+COPY prisma ./prisma/
 
-# Install dependencies
-RUN npm ci
+# Install deps + generate Prisma dalam 1 layer
+RUN npm ci --omit=dev && npx prisma generate
 
-# Copy the rest of the application code
+# Copy source code
 COPY . .
 
-# Generate Prisma Client
-RUN npx prisma generate
+ENV NODE_ENV=production
 
-# Create directory for SQLite database if it doesn't exist
-RUN mkdir -p prisma
-
-# Start the application. 
-# We run `prisma db push` to ensure the SQLite schema is synced before starting the bot.
-CMD ["sh", "-c", "npx prisma db push && npm start"]
+# Sync DB lalu start bot
+CMD ["sh", "-c", "npx prisma db push --skip-generate && node src/index.js"]

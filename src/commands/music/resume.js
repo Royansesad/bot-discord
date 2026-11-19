@@ -16,7 +16,7 @@ export async function execute(interaction, client) {
   }
 
   try {
-    const song = resumeMusic(interaction.guildId);
+    const song = await resumeMusic(interaction.guildId);
     await interaction.reply({
       embeds: [successEmbed('▶️ Musik Dilanjutkan', `Pemutaran **${song.title}** dilanjutkan.`)],
     });

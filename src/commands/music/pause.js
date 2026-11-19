@@ -16,7 +16,7 @@ export async function execute(interaction, client) {
   }
 
   try {
-    const song = pauseMusic(interaction.guildId);
+    const song = await pauseMusic(interaction.guildId);
     await interaction.reply({
       embeds: [successEmbed('⏸️ Musik Dijeda', `Pemutaran **${song.title}** telah dijeda. Ketik \`/resume\` untuk melanjutkan.`)],
     });

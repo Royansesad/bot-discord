@@ -21,6 +21,7 @@ export function onReady(client) {
     { name: `${client.guilds.cache.size} servers`, type: ActivityType.Watching },
     { name: '/adventure • Fight Bosses!', type: ActivityType.Playing },
     { name: '/chat • AI Assistant', type: ActivityType.Listening },
+    { name: '🎵 /play • Lavalink Music', type: ActivityType.Listening },
   ];
 
   let i = 0;

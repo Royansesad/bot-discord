@@ -1,4 +1,4 @@
-// /play - Memutar lagu di voice channel
+// /play - Memutar lagu di voice channel via Lavalink / NodeLink
 import { SlashCommandBuilder } from 'discord.js';
 import { playMusic } from '../../services/musicService.js';
 import { errorEmbed } from '../../utils/embeds.js';
@@ -7,10 +7,10 @@ export const category = 'music';
 
 export const data = new SlashCommandBuilder()
   .setName('play')
-  .setDescription('Memutar musik dari YouTube di Voice Channel')
+  .setDescription('Memutar musik dari SoundCloud, Spotify, YouTube, Deezer, dll')
   .addStringOption(opt =>
     opt.setName('query')
-      .setDescription('Judul lagu atau URL YouTube')
+      .setDescription('Judul lagu atau URL (SoundCloud, Spotify, YouTube, Deezer, dll)')
       .setRequired(true)
   );
 

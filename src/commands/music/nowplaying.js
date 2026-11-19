@@ -21,11 +21,13 @@ export async function execute(interaction, client) {
 
   const embed = new EmbedBuilder()
     .setColor(config.colors.primary)
-    .setTitle(`🎧 Now Playing${queue.isPaused ? ' (Paused)' : ''}`)
+    .setTitle(`🎧 Now Playing${queue.isPaused ? ' ⏸️ (Paused)' : ''}`)
     .setDescription(`[**${song.title}**](${song.url})`)
     .addFields(
-      { name: '⏱️ Durasi', value: song.duration, inline: true },
+      { name: '🎤 Artis', value: song.author || 'Unknown', inline: true },
+      { name: '⏱️ Durasi', value: song.isStream ? '🔴 LIVE' : song.duration, inline: true },
       { name: '👤 Peminta', value: `<@${song.requester.id}>`, inline: true },
+      { name: '🔊 Volume', value: `${queue.volume}%`, inline: true },
       { name: '📜 Sisa Antrean', value: `${queue.songs.length} lagu`, inline: true }
     )
     .setThumbnail(song.thumbnail || null)

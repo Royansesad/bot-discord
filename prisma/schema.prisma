@@ -152,3 +152,21 @@ model ChatContext {
 
   @@index([userId])
 }
+
+// ============================================
+// Lavalink Node Manager
+// ============================================
+
+/// Dynamic node Lavalink kustom dari command
+model LavalinkNode {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  url       String
+  auth      String
+  secure    Boolean  @default(false)
+  priority  String   @default("secondary") // main, secondary, fallback
+  isCustom  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+

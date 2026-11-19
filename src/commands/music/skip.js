@@ -16,7 +16,7 @@ export async function execute(interaction, client) {
   }
 
   try {
-    const skipped = skipTrack(interaction.guildId);
+    const skipped = await skipTrack(interaction.guildId);
     await interaction.reply({
       embeds: [successEmbed('⏭️ Lagu Dilewati', `**${skipped.title}** berhasil dilewati.`)],
     });

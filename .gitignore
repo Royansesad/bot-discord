@@ -57,5 +57,9 @@ Thumbs.db
 *.sln
 *.sw?
 
+.freebuff
+.agent/
 
 TODO.md
+
+*.zip
