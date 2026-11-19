@@ -54,13 +54,13 @@ try {
   console.warn('⚠️ Gagal menginisialisasi Lavalink. Musik tidak akan berfungsi.');
 }
 
-// Cek ketersediaan tool engine native (yt-dlp / FFmpeg opsional)
+// Cek ketersediaan tool engine native (youtubei.js / FFmpeg opsional)
 {
   const tools = detectNativeTools();
-  if (tools.ytdlp) {
-    console.log(`🪶 Native engine siap (yt-dlp: ${tools.ytdlpPath})${tools.ffmpeg ? ' + FFmpeg' : ' • Opus passthrough, tanpa FFmpeg'}`);
+  if (tools.youtubei) {
+    console.log(`🪶 Native engine siap (youtubei.js, tanpa cookie${tools.proxy ? ', via proxy' : ''})${tools.ffmpeg ? ' + FFmpeg' : ' • Opus passthrough, tanpa FFmpeg'}`);
   } else {
-    console.warn('⚠️ yt-dlp tidak ditemukan — engine native tidak tersedia (set YTDLP_PATH).');
+    console.warn('⚠️ youtubei.js tidak tersedia — engine native tidak bisa dipakai (jalankan npm install).');
   }
   console.log(`🎛️ Engine audio aktif: ${getActiveEngine().toUpperCase()}`);
 }

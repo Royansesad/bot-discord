@@ -356,8 +356,9 @@ async function handleMusicButton(client, interaction) {
             .setTitle('🪶 Native Engine Status')
             .setDescription('Pemutaran berjalan langsung di proses bot (tanpa Lavalink/NodeLink).')
             .addFields(
-              { name: 'yt-dlp', value: tools.ytdlp ? `\`tersedia\` (\`${tools.ytdlpPath}\`)` : '`tidak ditemukan`', inline: true },
+              { name: 'youtubei.js', value: tools.youtubei ? '`aktif` (tanpa cookie)' : '`tidak tersedia`', inline: true },
               { name: 'FFmpeg', value: tools.ffmpeg ? '`tersedia`' : '`tidak ada` (Opus passthrough)', inline: true },
+              { name: 'Proxy', value: tools.proxy ? '`aktif`' : '`tidak diatur`', inline: true },
               { name: 'Volume realtime', value: tools.ffmpeg ? '✅ Didukung' : '⚠️ Butuh FFmpeg', inline: true }
             )
             .setTimestamp();

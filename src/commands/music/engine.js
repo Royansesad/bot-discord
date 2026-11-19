@@ -33,7 +33,7 @@ export const data = new SlashCommandBuilder()
           .addChoices(
             { name: '🎵 Lavalink (Public Multi-Node)', value: 'lavalink' },
             { name: '⚡ NodeLink v3.0.0', value: 'nodelink' },
-            { name: '🪶 Native (discord.js + yt-dlp, tanpa server audio)', value: 'native' }
+            { name: '🪶 Native (discord.js + youtubei.js, tanpa cookie)', value: 'native' }
           )
       )
   );
@@ -53,14 +53,15 @@ export async function execute(interaction, client) {
         `Engine aktif: **\`${currentEngine.toUpperCase()}\`**\n\n` +
         '• **Lavalink** — node publik, multi-node failover\n' +
         '• **NodeLink** — server audio ringan kompatibel Lavalink\n' +
-        '• **Native** — yt-dlp + @discordjs/voice, berjalan di proses bot tanpa server audio\n\n' +
+        '• **Native** — youtubei.js + @discordjs/voice, tanpa cookie & server audio\n\n' +
         'Gunakan `/engine use` untuk berpindah engine kapan saja.'
       )
       .addFields({
-        name: `${tools.ytdlp ? '🟢' : '🔴'} Native Engine`,
+        name: `${tools.youtubei ? '🟢' : '🔴'} Native Engine`,
         value:
-          `yt-dlp: ${tools.ytdlp ? `\`tersedia\` (\`${tools.ytdlpPath}\`)` : '`tidak ditemukan`'}\n` +
-          `FFmpeg: ${tools.ffmpeg ? '`tersedia` (volume realtime)' : '`tidak ada` (Opus passthrough)'}`,
+          `youtubei.js: ${tools.youtubei ? '`aktif` (tanpa cookie)' : '`tidak tersedia`'}\n` +
+          `FFmpeg: ${tools.ffmpeg ? '`tersedia` (volume realtime)' : '`tidak ada` (Opus passthrough)'}\n` +
+          `Proxy: ${tools.proxy ? '`aktif` (YOUTUBE_PROXY)' : '`tidak diatur`'}`,
         inline: false,
       })
       .setTimestamp();
@@ -104,7 +105,7 @@ export async function execute(interaction, client) {
       const engineNames = {
         lavalink: '🎵 Lavalink (Public Multi-Node)',
         nodelink: '⚡ NodeLink v3.0.0',
-        native: '🪶 Native Engine (yt-dlp + @discordjs/voice)',
+        native: '🪶 Native Engine (youtubei.js + @discordjs/voice)',
       };
 
       const embed = successEmbed(

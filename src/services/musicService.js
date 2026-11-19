@@ -43,8 +43,8 @@ export function setActiveEngine(engine) {
 
   if (next === 'native' && !native.isNativeAvailable()) {
     throw new Error(
-      'Engine native tidak bisa dipakai: yt-dlp tidak ditemukan. ' +
-      'Install yt-dlp atau set environment YTDLP_PATH terlebih dahulu.'
+      'Engine native tidak bisa dipakai: paket youtubei.js gagal dimuat. ' +
+      'Jalankan "npm install" lalu restart bot.'
     );
   }
 
@@ -723,7 +723,7 @@ export function buildPlayerPayload(guildId) {
 
   const nativeTools = queue.backend === 'native' ? native.detectNativeTools() : null;
   const engineLabel = queue.backend === 'native'
-    ? `Native Engine (yt-dlp${nativeTools.ffmpeg ? ' + FFmpeg' : ' • Opus'})`
+    ? `Native Engine (youtubei.js${nativeTools.ffmpeg ? ' + FFmpeg' : ' • Opus'})`
     : (queue.player?.node?.name || 'Auto Node');
 
   const loopLabel =
@@ -969,7 +969,7 @@ export async function playMusic(interaction, query) {
     throw new Error('Bot tidak memiliki izin Connect atau Speak di channel tersebut!');
   }
 
-  // Engine native: discord.js + @discordjs/voice + yt-dlp (tanpa Lavalink/NodeLink)
+  // Engine native: discord.js + @discordjs/voice + youtubei.js (tanpa Lavalink/NodeLink)
   if (activeEngine === 'native') {
     return playNativeMusic(interaction, query);
   }
@@ -1233,7 +1233,7 @@ async function processQueue(guildId, initialInteraction = null) {
 
 async function playNativeMusic(interaction, query) {
   if (!native.isNativeAvailable()) {
-    throw new Error('Engine native tidak tersedia: yt-dlp tidak ditemukan (set YTDLP_PATH).');
+    throw new Error('Engine native tidak tersedia: paket youtubei.js gagal dimuat. Jalankan "npm install" lalu restart bot.');
   }
 
   if (!interaction.deferred && !interaction.replied) {
