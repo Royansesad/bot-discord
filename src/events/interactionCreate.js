@@ -11,11 +11,12 @@ import {
   getQueue,
   togglePauseMusic,
   skipTrack,
-  stopMusic,
+  stopOrPlayNext,
   toggleLoopMode,
   shuffleQueue,
   adjustVolume,
   buildPlayerPayload,
+  buildStoppedPlayerPayload,
   getShoukaku,
   playMusic,
 } from '../services/musicService.js';
@@ -224,6 +225,7 @@ async function handleMusicButton(client, interaction) {
         client: interaction.client,
         deferred: true,
         replied: true,
+        isDashboardSearch: true,
         deferReply: async () => {},
         editReply: async (payload) => {
           return await interaction.channel.send(payload);
@@ -292,48 +294,60 @@ async function handleMusicButton(client, interaction) {
     });
   }
 
+  // Bug fix "hanyabot didn't respond": ack tombol SEKARANG, sebelum operasi
+  // musik yang bisa memakan waktu > 3 detik (ensureActivePlayer, stopTrack, dll).
+  await interaction.deferUpdate().catch(() => {});
+
   try {
     const action = interaction.customId.replace('btn_music_', '');
+
+    // Panel selalu dikembalikan ke kondisi terbaru; kalau tidak ada lagu,
+    // tampilkan panel "stopped" tanpa tombol (control panel ikut tertutup).
+    const currentPayload = () => {
+      const payload = buildPlayerPayload(guildId);
+      return payload.embeds?.length ? payload : buildStoppedPlayerPayload(guildId);
+    };
 
     switch (action) {
       case 'toggle_pause': {
         await togglePauseMusic(guildId);
-        const payload = buildPlayerPayload(guildId);
-        await interaction.update(payload);
+        await interaction.editReply(currentPayload());
         break;
       }
       case 'skip': {
         const skipped = await skipTrack(guildId);
-        await interaction.reply({
+        await interaction.editReply(currentPayload());
+        await interaction.followUp({
           embeds: [successEmbed('⏭️ Skip Lagu', `Lagu **${skipped.title}** di-skip oleh <@${interaction.user.id}>!`)],
           flags: 64,
         });
         break;
       }
       case 'stop': {
-        stopMusic(guildId);
-        await interaction.update({
-          embeds: [
-            new EmbedBuilder()
-              .setColor(config.colors.danger)
-              .setTitle('⏹️ Musik Dihentikan')
-              .setDescription(`Musik dihentikan dan bot disconnect oleh <@${interaction.user.id}>.`)
-              .setTimestamp()
-          ],
-          components: [],
-        });
+        const result = await stopOrPlayNext(guildId);
+        if (result.playedNext) {
+          await interaction.editReply(currentPayload());
+          await interaction.followUp({
+            embeds: [successEmbed('⏭️ Lagu Berikutnya', `Masih ada antrean — memutar lagu berikutnya setelah **${result.skipped?.title || 'lagu sebelumnya'}**.`)],
+            flags: 64,
+          });
+        } else {
+          await interaction.editReply(buildStoppedPlayerPayload(guildId, `Musik dihentikan oleh <@${interaction.user.id}>.`));
+          await interaction.followUp({
+            embeds: [successEmbed('⏹️ Musik Dihentikan', 'Antrean dibersihkan dan bot keluar dari voice channel.')],
+            flags: 64,
+          });
+        }
         break;
       }
       case 'loop': {
-        const newMode = await toggleLoopMode(guildId);
-        const payload = buildPlayerPayload(guildId);
-        await interaction.update(payload);
+        await toggleLoopMode(guildId);
+        await interaction.editReply(currentPayload());
         break;
       }
       case 'shuffle': {
         const count = await shuffleQueue(guildId);
-        const payload = buildPlayerPayload(guildId);
-        await interaction.update(payload);
+        await interaction.editReply(currentPayload());
         await interaction.followUp({
           embeds: [successEmbed('🔀 Shuffle Antrean', `Berhasil mengacak **${count}** lagu di antrean!`)],
           flags: 64,
@@ -341,29 +355,29 @@ async function handleMusicButton(client, interaction) {
         break;
       }
       case 'voldown': {
-        const newVol = await adjustVolume(guildId, -10);
-        const payload = buildPlayerPayload(guildId);
-        await interaction.update(payload);
+        await adjustVolume(guildId, -10);
+        await interaction.editReply(currentPayload());
         break;
       }
       case 'volup': {
-        const newVol = await adjustVolume(guildId, 10);
-        const payload = buildPlayerPayload(guildId);
-        await interaction.update(payload);
+        await adjustVolume(guildId, 10);
+        await interaction.editReply(currentPayload());
         break;
       }
       case 'queue': {
-        const songsList = queue.songs.length === 0
+        const currentQueue = getQueue(guildId) || queue;
+        const songsList = currentQueue.songs.length === 0
           ? '*(Antrean kosong)*'
-          : queue.songs.slice(0, 10).map((s, i) => `${i + 1}. **[${s.title}](${s.url})** (${s.duration})`).join('\n');
+          : currentQueue.songs.slice(0, 10).map((s, i) => `${i + 1}. **[${s.title}](${s.url})** (${s.duration})`).join('\n');
 
         const embed = new EmbedBuilder()
           .setColor(config.colors.primary)
           .setTitle('📜 Antrean Pemutar Musik')
-          .setDescription(`**Sedang Diputar:**\n▶️ **[${queue.currentlyPlaying.title}](${queue.currentlyPlaying.url})**\n\n**Berikutnya (${queue.songs.length}):**\n${songsList}`)
-          .setFooter({ text: queue.songs.length > 10 ? `+${queue.songs.length - 10} lagu lainnya` : 'Remote Control Queue' });
+          .setDescription(`**Sedang Diputar:**\n▶️ **[${currentQueue.currentlyPlaying?.title || '-'}](${currentQueue.currentlyPlaying?.url || ''})**\n\n**Berikutnya (${currentQueue.songs.length}):**\n${songsList}`)
+          .setFooter({ text: currentQueue.songs.length > 10 ? `+${currentQueue.songs.length - 10} lagu lainnya` : 'Remote Control Queue' });
 
-        await interaction.reply({ embeds: [embed], flags: 64 });
+        await interaction.editReply(currentPayload());
+        await interaction.followUp({ embeds: [embed], flags: 64 });
         break;
       }
       case 'node': {
@@ -383,7 +397,8 @@ async function handleMusicButton(client, interaction) {
             )
             .setTimestamp();
 
-          await interaction.reply({ embeds: [embed], flags: 64 });
+          await interaction.editReply(currentPayload());
+          await interaction.followUp({ embeds: [embed], flags: 64 });
           break;
         }
 
@@ -405,15 +420,19 @@ async function handleMusicButton(client, interaction) {
           });
         }
 
-        await interaction.reply({ embeds: [embed], flags: 64 });
+        await interaction.editReply(currentPayload());
+        await interaction.followUp({ embeds: [embed], flags: 64 });
         break;
       }
       default:
+        await interaction.editReply(currentPayload());
         break;
     }
   } catch (err) {
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({ embeds: [errorEmbed('❌ Error Remot', err.message)], flags: 64 });
-    }
+    const payload = { embeds: [errorEmbed('❌ Error Remot', err.message)], flags: 64 };
+    try {
+      if (interaction.deferred || interaction.replied) await interaction.followUp(payload);
+      else await interaction.reply(payload);
+    } catch { /* interaction sudah kedaluwarsa */ }
   }
 }

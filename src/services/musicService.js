@@ -18,6 +18,36 @@ import {
 } from './lavalinkNodes.js';
 import * as native from './nativeEngine.js';
 
+// Batas waktu pencarian. Sebelumnya node.rest.resolve() memakai restTimeout 20 detik
+// dan mencoba 5 prefix x semua node secara berurutan — itulah sebabnya status
+// "Bot is thinking..." bertahan lama walaupun bot sudah masuk voice channel.
+const SEARCH_REQUEST_TIMEOUT = 7000;
+const SEARCH_TOTAL_TIMEOUT = 14000;
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const limit = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timeout`)), ms);
+  });
+  return Promise.race([promise, limit]).finally(() => clearTimeout(timer));
+}
+
+/** Beri feedback instan setelah deferReply supaya indikator "thinking" langsung hilang. */
+async function sendPreparingReply(interaction) {
+  // Dashboard search memakai fake interaction yang editReply()-nya mengirim
+  // pesan baru ke channel — jangan tambahkan pesan "preparing" duplikat.
+  if (interaction.isDashboardSearch) return;
+  if (interaction.deferred || interaction.replied) {
+    await interaction.editReply({
+      embeds: [new EmbedBuilder()
+        .setColor(config.colors.info)
+        .setTitle('⏳ Menyiapkan Musik...')
+        .setDescription('Mencari lagu dan menghubungkan ke voice channel. Mohon tunggu sebentar...')],
+      components: [],
+    }).catch(() => {});
+  }
+}
+
 let shoukaku = null;
 const queues = new Map();
 let activeEngine = 'lavalink'; // 'lavalink' | 'nodelink' | 'native'
@@ -78,7 +108,7 @@ export async function initializeShoukaku(client) {
     resumeTimeout: 60,
     reconnectTries: 3,        // Dikurangi dari 10 → 3 agar tidak spam reconnect
     reconnectInterval: 15,    // Dikurangi dari 3 → 15 detik antar retry
-    restTimeout: 20000,
+    restTimeout: 8000,
     frameBufferDurationMs: 5000, // Pre-buffer 5 detik (Anti-lag Spotify-style)
   });
 
@@ -548,6 +578,16 @@ function handleEmptyQueue(queue) {
     queue.progressInterval = null;
   }
 
+  // Bug fix: skip lagu terakhir dulu membuat lagu mati tetapi control panel
+  // tetap tampil dengan tombol aktif. Tutup panelnya di sini (semua jalur:
+  // skip tombol, /skip, lagu selesai, maupun error).
+  hidePlayerPanel(queue, 'Antrean habis. Tidak ada lagu yang sedang diputar.');
+
+  // Kembalikan memori player script youtubei.js setelah native selesai dipakai.
+  if (queue.backend === 'native') {
+    native.releaseNativeClients();
+  }
+
   const guildId = queue.guildId;
   clearDisconnectTimeout(queue);
 
@@ -813,6 +853,29 @@ export function buildPlayerPayload(guildId) {
 }
 
 /**
+ * Payload saat pemutaran berhenti: tombolControl panel dihapus (components: [])
+ * supaya tidak ada tombol yang masih bisa ditekan setelah lagu selesai / di-skip.
+ */
+export function buildStoppedPlayerPayload(guildId, description = 'Tidak ada lagu yang sedang diputar.') {
+  return {
+    embeds: [new EmbedBuilder()
+      .setColor(config.colors.warning)
+      .setTitle('⏹️ Pemutar Musik Dihentikan')
+      .setDescription(description)
+      .setTimestamp()],
+    components: [],
+  };
+}
+
+/** Sembunyikan control panel lama (hapus embed + tombol) lalu lepas referensinya. */
+function hidePlayerPanel(queue, description) {
+  if (!queue?.lastPlayerMessage) return;
+  const payload = buildStoppedPlayerPayload(queue.guildId, description);
+  queue.lastPlayerMessage.edit(payload).catch(() => {});
+  queue.lastPlayerMessage = null;
+}
+
+/**
  * Update pesan player aktif di text channel jika ada
  */
 export async function updatePlayerMessage(guildId) {
@@ -851,35 +914,40 @@ async function searchTrack(query, preferredNode = null) {
   const cleanText = cleanQuery.replace(/^(ytsearch|scsearch|spsearch|dzsearch|ytmsearch|amsearch):/i, '').trim();
 
   // Daftar prefix pencarian yang dicoba secara berurutan.
-  // SoundCloud & Spotify diutamakan agar kompatibel penuh jika YouTube dimatikan di NodeLink!
+  // YouTube diutamakan untuk query teks karena paling cepat & paling sering
+  // berhasil; SoundCloud/Spotify tetap jadi fallback. Prefix eksplisit dari user
+  // tetap dihormati. Dulu ada 5 prefix per node (40+ request) — sekarang 3.
   let searchPrefixes;
   if (isUrl) {
     searchPrefixes = [cleanQuery];
   } else if (/^(ytsearch|scsearch|spsearch|dzsearch|ytmsearch|amsearch):/i.test(cleanQuery)) {
     searchPrefixes = [
       cleanQuery,
+      `ytsearch:${cleanText}`,
       `scsearch:${cleanText}`,
       `spsearch:${cleanText}`,
-      `ytsearch:${cleanText}`,
-      `dzsearch:${cleanText}`,
-      `ytmsearch:${cleanText}`,
     ];
   } else {
     searchPrefixes = [
+      `ytsearch:${cleanText}`,
       `scsearch:${cleanText}`,
       `spsearch:${cleanText}`,
-      `ytsearch:${cleanText}`,
-      `dzsearch:${cleanText}`,
-      `ytmsearch:${cleanText}`,
     ];
   }
 
   let lastError = null;
+  const deadline = Date.now() + SEARCH_TOTAL_TIMEOUT;
 
   for (const node of candidateNodes) {
+    if (Date.now() > deadline) break;
     for (const searchQuery of searchPrefixes) {
+      if (Date.now() > deadline) break;
       try {
-        let result = await node.rest.resolve(searchQuery);
+        const result = await withTimeout(
+          node.rest.resolve(searchQuery),
+          SEARCH_REQUEST_TIMEOUT,
+          `Pencarian di node ${node.name}`
+        );
 
         if (!result || result.loadType === 'empty' || result.loadType === 'error') {
           continue;
@@ -918,7 +986,7 @@ async function searchTrack(query, preferredNode = null) {
     addNodePenalty(node, 3);
   }
 
-  throw new Error(`Semua provider pencarian (SoundCloud, Spotify, YouTube, Deezer) gagal menemukan lagu: ${lastError?.message || 'Tidak ada hasil'}`);
+  throw new Error(`Semua provider pencarian (YouTube, SoundCloud, Spotify) gagal menemukan lagu: ${lastError?.message || 'Tidak ada hasil'}`);
 }
 
 async function prefetchNextTrack(queue) {
@@ -981,6 +1049,7 @@ export async function playMusic(interaction, query) {
   if (!interaction.deferred && !interaction.replied) {
     await interaction.deferReply();
   }
+  await sendPreparingReply(interaction);
 
   // Jangan mencampur engine dalam satu guild
   const existingQueue = queues.get(interaction.guildId);
@@ -999,9 +1068,15 @@ export async function playMusic(interaction, query) {
 
   const activeNode = queues.get(interaction.guildId)?.player?.node;
 
+  // Mulai pencarian SEBELUM join voice supaya dua operasi paling berat berjalan
+  // bersamaan. Total waktu /play turun drastis dibanding menjalankannya berurutan.
+  const searchPromise = searchTrack(query, activeNode);
+  // Hindari unhandledRejection jika search selesai gagal saat join masih berjalan.
+  searchPromise.catch(() => {});
+
   let songInfo;
   try {
-    songInfo = await searchTrack(query, activeNode);
+    songInfo = await searchPromise;
   } catch (err) {
     throw new Error(`Gagal mencari lagu: ${err.message}`);
   }
@@ -1239,8 +1314,14 @@ async function playNativeMusic(interaction, query) {
   if (!interaction.deferred && !interaction.replied) {
     await interaction.deferReply();
   }
+  await sendPreparingReply(interaction);
 
   const voiceChannel = interaction.member?.voice?.channel;
+
+  // Pencarian Youtube dimulai lebih awal supaya berjalan bersamaan dengan
+  // pengecekan queue / inisialisasi (search client sekarang jauh lebih ringan).
+  const searchPromise = native.searchNative(query);
+  searchPromise.catch(() => {});
 
   const existingQueue = queues.get(interaction.guildId);
   if (existingQueue?.backend === 'shoukaku') {
@@ -1258,7 +1339,7 @@ async function playNativeMusic(interaction, query) {
 
   let songInfo;
   try {
-    songInfo = await native.searchNative(query);
+    songInfo = await searchPromise;
   } catch (err) {
     throw new Error(`Gagal mencari lagu: ${err.message}`);
   }
@@ -1426,6 +1507,23 @@ export async function skipTrack(guildId) {
 }
 
 /**
+ * Stop "normal": kalau masih ada antrean, putar lagu berikutnya; kalau tidak,
+ * benar-benar hentikan musik & disconnect. Dipakai oleh /stop dan tombol Stop.
+ */
+export async function stopOrPlayNext(guildId) {
+  const queue = queues.get(guildId);
+  if (!queue) return { stopped: true, playedNext: false, skipped: null };
+
+  if (queue.currentlyPlaying && queue.songs.length > 0) {
+    const skipped = await skipTrack(guildId);
+    return { stopped: false, playedNext: true, skipped };
+  }
+
+  stopMusic(guildId);
+  return { stopped: true, playedNext: false, skipped: null };
+}
+
+/**
  * Sinkronkan timestamp pause agar progress bar tetap akurat
  */
 function setPauseTimestamps(queue, paused) {
@@ -1565,6 +1663,8 @@ export function stopMusic(guildId) {
 
   clearDisconnectTimeout(queue);
 
+  hidePlayerPanel(queue, 'Musik dihentikan. Control panel ditutup.');
+
   queue.songs = [];
   queue.currentlyPlaying = null;
   queue.isPaused = false;
@@ -1575,6 +1675,7 @@ export function stopMusic(guildId) {
     } catch (err) {
       logError('Native Destroy Error', err);
     }
+    native.releaseNativeClients();
   } else {
     // Cegah event 'end' dari player lama memajukan antrean yang sudah dihapus
     queue._skipRequested = false;

@@ -20,5 +20,10 @@ COPY . .
 
 ENV NODE_ENV=production
 
+# Engine native memuat AST player script youtubei.js yang besar. Batasi heap V8 agar
+# GC lebih agresif dan proses tidak di-SIGKILL (exit 137) saat memory host mepet.
+# Bisa di-override: docker run -e NODE_OPTIONS="--max-old-space-size=512" ...
+ENV NODE_OPTIONS="--max-old-space-size=384"
+
 # Sync DB lalu start bot
 CMD ["sh", "-c", "npx prisma db push --skip-generate && node src/index.js"]

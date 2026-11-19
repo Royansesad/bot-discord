@@ -159,11 +159,15 @@ const STREAM_CLIENTS = ['VISIONOS', 'ANDROID_VR', 'WEB_REMIX'];
 let searchClientPromise = null;
 const streamClientPromises = new Map();
 
-function createInnertube(clientType) {
+function createInnertube(clientType, retrievePlayer = true) {
   return Innertube.create({
     lang: 'en',
     location: 'US',
-    retrieve_player: true,
+    // Player script dipakai HANYA untuk decipher URL media. Sesi pencarian tidak
+    // pernah memanggil decipher, jadi memuatnya hanya membuang memori (JsAnalyzer
+    // mem-parsing ~2MB JavaScript menjadi AST — ini sumber lonjakan memori saat
+    // engine native dipakai, hingga proses di-SIGKILL dengan exit code 137).
+    retrieve_player: retrievePlayer,
     enable_session_cache: false,
     client_type: clientType,
     fetch: proxiedFetch,
@@ -172,7 +176,7 @@ function createInnertube(clientType) {
 
 function getSearchClient() {
   if (!searchClientPromise) {
-    searchClientPromise = createInnertube('WEB').catch((err) => {
+    searchClientPromise = createInnertube('WEB', false).catch((err) => {
       searchClientPromise = null;
       throw new Error(`Gagal membuat sesi YouTube (pencarian): ${shortError(err)}`);
     });
@@ -182,13 +186,22 @@ function getSearchClient() {
 
 function getStreamClient(clientType = STREAM_CLIENTS[0]) {
   if (!streamClientPromises.has(clientType)) {
-    const promise = createInnertube(clientType).catch((err) => {
+    const promise = createInnertube(clientType, true).catch((err) => {
       streamClientPromises.delete(clientType);
       throw new Error(`Gagal membuat sesi YouTube (${clientType}): ${shortError(err)}`);
     });
     streamClientPromises.set(clientType, promise);
   }
   return streamClientPromises.get(clientType);
+}
+
+/**
+ * Lepaskan sesi Innertube yang di-cache setelah antrean native selesai.
+ * Tanpa ini, AST player script dari tiap klien tetap tersimpan di memori.
+ */
+export function releaseNativeClients() {
+  searchClientPromise = null;
+  streamClientPromises.clear();
 }
 
 /** Ambil baris pertama pesan error agar embed Discord tidak kebanjiran stack trace. */
@@ -254,8 +267,10 @@ export async function searchNative(query) {
   const videoId = parseYouTubeId(clean);
   const yt = await getSearchClient();
 
-  // Panaskan sesi streaming di latar belakang supaya lagu pertama cepat mulai
-  getStreamClient().catch(() => {});
+  // Sesi streaming sengaja TIDAK dihangatkan di sini: membuat klien VISIONOS
+  // sekarang berarti dua sesi Innertube aktif bersamaan (pencarian + streaming)
+  // dan dua AST player script di memori. Klien streaming dibuat lazily oleh
+  // openAudioSource() tepat sebelum lagu diputar.
 
   let video;
 
@@ -347,7 +362,7 @@ async function openAudioSource(videoId, preferredClient = null) {
 
   // Batasi total waktu percobaan agar command musik tidak menggantung lama.
   // Proxy (terutama WARP) bisa lebih lambat saat koneksi pertama.
-  const deadline = Date.now() + (usingProxy ? 45000 : 25000);
+  const deadline = Date.now() + (usingProxy ? 25000 : 15000);
 
   const clientOrder = preferredClient
     ? [preferredClient, ...STREAM_CLIENTS.filter((c) => c !== preferredClient)]
@@ -455,6 +470,9 @@ async function openAudioSource(videoId, preferredClient = null) {
         }
 
         if (!response.ok || !response.body) {
+          // Body dari response gagal harus dibatalkan, kalau tidak undici menyimpan
+          // buffer responsya sampai GC — ini ikut menyumbang memori saat retry.
+          await response.body?.cancel().catch(() => {});
           failures.push(`${clientType}: HTTP ${response.status}`);
           break;
         }
@@ -499,7 +517,9 @@ async function openAudioSource(videoId, preferredClient = null) {
 // Jika di tengah lagu server membalas 403 (URL kedaluwarsa / host berganti),
 // URL media diambil ulang lewat callback `refresh` lalu potongan yang sama
 // dicoba lagi dari offset yang sama.
-const MEDIA_CHUNK_SIZE = 512 * 1024;
+// 256 KiB sudah cukup untuk menjaga throughput sekaligus membatasi memori puncak
+// per potongan (dulu 512 KiB, yang berlipat ganda saat ada beberapa retry).
+const MEDIA_CHUNK_SIZE = 256 * 1024;
 const MEDIA_CHUNK_RETRIES = 3;
 const MEDIA_MAX_REFRESH = 2;
 
@@ -930,8 +950,9 @@ export async function playNativeTrack(queue, song) {
       finish(new Error(reason || `Proses audio berhenti tanpa output (exit ${code})`));
     };
 
-    // Timeout: proses masih hidup tapi lambat, biarkan pemutaran berjalan
-    const timer = setTimeout(() => finish(null), 15000);
+    // Timeout: proses masih hidup tapi lambat, biarkan pemutaran berjalan.
+    // Diperpendek dari 15s supaya user tidak menatap status "thinking" terlalu lama.
+    const timer = setTimeout(() => finish(null), 8000);
 
     stream.once('data', onData);
     stream.once('error', onError);

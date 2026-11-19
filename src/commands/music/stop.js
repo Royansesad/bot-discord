@@ -1,7 +1,7 @@
-// /stop - Hentikan musik dan keluar dari Voice Channel
+// /stop - Hentikan musik (atau lanjut ke antrean berikutnya jika masih ada)
 import discordJsPkg from 'discord.js';
 const { SlashCommandBuilder } = discordJsPkg;
-import { stopMusic } from '../../services/musicService.js';
+import { stopOrPlayNext } from '../../services/musicService.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
 
 export const category = 'music';
@@ -16,12 +16,18 @@ export async function execute(interaction, client) {
     return interaction.reply({ embeds: [errorEmbed('❌ Error', 'Kamu harus berada di Voice Channel.')], flags: 64 });
   }
 
-  const stopped = stopMusic(interaction.guildId);
-  if (!stopped) {
-    return interaction.reply({ embeds: [errorEmbed('❌ Error', 'Tidak ada musik yang sedang diputar.')], flags: 64 });
+  const result = await stopOrPlayNext(interaction.guildId);
+
+  if (result.playedNext) {
+    return interaction.reply({
+      embeds: [successEmbed(
+        '⏭️ Lagu Berikutnya',
+        `**${result.skipped?.title || 'Lagu sebelumnya'}** dihentikan karena masih ada antrean — lagu berikutnya sedang diputar.`
+      )],
+    });
   }
 
-  await interaction.reply({
+  return interaction.reply({
     embeds: [successEmbed('⏹️ Musik Dihentikan', 'Antrean dibersihkan dan bot keluar dari voice channel.')],
   });
 }
