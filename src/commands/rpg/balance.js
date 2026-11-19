@@ -1,5 +1,6 @@
 // /balance - Lihat gold
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import { getPlayer } from '../../services/rpgService.js';
 import { errorEmbed } from '../../utils/embeds.js';
 import { formatNumber } from '../../utils/helpers.js';

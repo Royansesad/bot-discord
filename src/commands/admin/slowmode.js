@@ -1,5 +1,6 @@
 // /slowmode - Atur slowmode di channel
-import { SlashCommandBuilder, PermissionFlagsBits } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, PermissionFlagsBits } = discordJsPkg;
 import { requirePermission } from '../../utils/permissions.js';
 import { successEmbed } from '../../utils/embeds.js';
 import { logAction } from '../../services/auditService.js';

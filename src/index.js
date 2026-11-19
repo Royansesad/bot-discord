@@ -1,8 +1,10 @@
 // ============================================
 // index.js - Bot Entry Point
 // ============================================
-import { Client, GatewayIntentBits, Collection, Partials } from 'discord.js';
-import { PrismaClient } from '@prisma/client';
+import discordJsPkg from 'discord.js';
+const { Client, GatewayIntentBits, Collection, Partials } = discordJsPkg;
+import prismaPkg from '@prisma/client';
+const { PrismaClient } = prismaPkg;
 import config from './config.js';
 import { loadCommands } from './handlers/commandLoader.js';
 import { handleInteraction } from './events/interactionCreate.js';

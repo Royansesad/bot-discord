@@ -1,5 +1,6 @@
 // /start - Registrasi pemain RPG
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import { getPlayer, registerPlayer } from '../../services/rpgService.js';
 import { errorEmbed } from '../../utils/embeds.js';
 import config from '../../config.js';

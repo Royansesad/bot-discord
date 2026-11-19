@@ -1,5 +1,6 @@
 // /volume - Atur volume musik
-import { SlashCommandBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder } = discordJsPkg;
 import { setVolume, getQueue } from '../../services/musicService.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
 

@@ -1,5 +1,6 @@
 // /help - Menampilkan daftar semua command
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import config from '../../config.js';
 
 export const data = new SlashCommandBuilder()

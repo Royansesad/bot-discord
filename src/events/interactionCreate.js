@@ -2,12 +2,8 @@
 // interactionCreate.js - Interaction Handler
 // Handles Slash Commands, Autocomplete, & Music Remote Dashboard Buttons
 // ============================================
-import {
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-} from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = discordJsPkg;
 import { checkCooldown, setCooldown } from '../utils/cooldown.js';
 import { errorEmbed, successEmbed } from '../utils/embeds.js';
 import { handleCommandError, logError } from '../utils/errorManager.js';

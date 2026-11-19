@@ -1,5 +1,6 @@
 // /generate-image - Generate gambar menggunakan AI
-import { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder } = discordJsPkg;
 import { generateImage } from '../../services/aiService.js';
 import { errorEmbed } from '../../utils/embeds.js';
 import config from '../../config.js';

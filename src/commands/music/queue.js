@@ -1,5 +1,6 @@
 // /queue - Tampilkan antrean lagu
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import { getQueue, formatDuration } from '../../services/musicService.js';
 import { errorEmbed } from '../../utils/embeds.js';
 import config from '../../config.js';

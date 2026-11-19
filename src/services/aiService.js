@@ -3,7 +3,8 @@
 // Puter.js: Free AI, no API keys needed
 // Primary: puter.js | Fallback: APIMart HTTP
 // ============================================
-import { init, getAuthToken } from '@heyputer/puter.js/src/init.cjs';
+import puterInitPkg from '@heyputer/puter.js/src/init.cjs';
+const { init, getAuthToken } = puterInitPkg;
 import WebSocket from 'ws';
 import config from '../config.js';
 

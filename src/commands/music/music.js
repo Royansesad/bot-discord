@@ -1,11 +1,6 @@
 // /music - Music Dashboard Interaktif dengan Banner Tetap & Search Prompt
-import {
-  SlashCommandBuilder,
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-} from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = discordJsPkg;
 import config from '../../config.js';
 
 export const category = 'music';

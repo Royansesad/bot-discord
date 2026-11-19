@@ -1,5 +1,6 @@
 // /chat - Chat dengan AI assistant
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import { chatCompletion } from '../../services/aiService.js';
 import { errorEmbed } from '../../utils/embeds.js';
 import config from '../../config.js';

@@ -1,5 +1,6 @@
 // /stop - Hentikan musik dan keluar dari Voice Channel
-import { SlashCommandBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder } = discordJsPkg;
 import { stopMusic } from '../../services/musicService.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
 

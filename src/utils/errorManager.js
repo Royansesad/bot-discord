@@ -2,7 +2,8 @@
 // errorManager.js - Centralized Error Manager
 // Catches, logs, and formats errors for users
 // ============================================
-import { EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { EmbedBuilder } = discordJsPkg;
 import config from '../config.js';
 
 /**

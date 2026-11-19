@@ -1,5 +1,6 @@
 // /leaderboard - Menampilkan ranking pemain
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import { errorEmbed } from '../../utils/embeds.js';
 import { formatNumber, formatGold } from '../../utils/helpers.js';
 import config from '../../config.js';

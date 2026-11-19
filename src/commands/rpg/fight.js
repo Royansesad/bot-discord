@@ -1,5 +1,6 @@
 // /fight - Duel PvP antar player
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import { getPlayer, addXp, addGold, getEffectiveStats, logBattle } from '../../services/rpgService.js';
 import { simulatePvP } from '../../services/battleService.js';
 import { checkPlayerCooldown, setPlayerCooldown, formatCooldown } from '../../utils/cooldown.js';

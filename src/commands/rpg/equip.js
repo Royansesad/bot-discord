@@ -1,5 +1,6 @@
 // /equip - Pasang weapon atau armor
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import { getPlayer, getInventory, equipItem } from '../../services/rpgService.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
 import { rarityEmoji } from '../../utils/helpers.js';

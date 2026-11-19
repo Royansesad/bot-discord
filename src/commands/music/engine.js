@@ -1,5 +1,6 @@
 // /engine - Pilih & Kelola Audio Engine (Lavalink / NodeLink / Native)
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import {
   getShoukaku,
   getActiveEngine,

@@ -1,5 +1,6 @@
 // /profile - Lihat profil player RPG
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import { getPlayer, getEffectiveStats, getInventory } from '../../services/rpgService.js';
 import { errorEmbed, hpBar, progressBar } from '../../utils/embeds.js';
 import { formatNumber, formatGold, rarityEmoji } from '../../utils/helpers.js';

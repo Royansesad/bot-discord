@@ -1,5 +1,6 @@
 // /warn - Beri peringatan ke member
-import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } = discordJsPkg;
 import { requirePermission } from '../../utils/permissions.js';
 import { adminEmbed, warningEmbed } from '../../utils/embeds.js';
 import { logAction, getWarningCount } from '../../services/auditService.js';

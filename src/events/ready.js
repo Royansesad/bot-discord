@@ -1,8 +1,8 @@
+import discordJsPkg from 'discord.js';
+const { ActivityType } = discordJsPkg;
 // ============================================
 // ready.js - Bot Ready Event
 // ============================================
-import { ActivityType } from 'discord.js';
-
 export function onReady(client) {
   console.log('═══════════════════════════════════════');
   console.log(`✅ ${client.user.tag} is online!`);

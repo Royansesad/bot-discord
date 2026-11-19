@@ -1,5 +1,6 @@
 // /sell - Jual item dari inventory
-import { SlashCommandBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder } = discordJsPkg;
 import { getPlayer, removeItem, addGold } from '../../services/rpgService.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
 import { formatNumber, rarityEmoji } from '../../utils/helpers.js';

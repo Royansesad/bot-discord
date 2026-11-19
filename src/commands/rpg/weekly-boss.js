@@ -1,5 +1,6 @@
 // /weekly-boss - Melawan boss mingguan (turn-based interactive)
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import { getPlayer, addXp, addGold, addItem, getEffectiveStats } from '../../services/rpgService.js';
 import { runInteractiveBattle, generateLoot } from '../../services/battleService.js';
 import { checkPlayerCooldown, setPlayerCooldown, formatCooldown } from '../../utils/cooldown.js';

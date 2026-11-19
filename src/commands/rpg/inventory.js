@@ -1,5 +1,6 @@
 // /inventory - Lihat inventory pemain
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import { getPlayer, getInventory } from '../../services/rpgService.js';
 import { errorEmbed } from '../../utils/embeds.js';
 import { formatNumber, rarityEmoji, capitalize } from '../../utils/helpers.js';

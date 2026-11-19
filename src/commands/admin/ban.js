@@ -1,5 +1,6 @@
 // /ban - Ban member dari server
-import { SlashCommandBuilder, PermissionFlagsBits } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, PermissionFlagsBits } = discordJsPkg;
 import { requirePermission, checkHierarchy } from '../../utils/permissions.js';
 import { adminEmbed } from '../../utils/embeds.js';
 import { logAction } from '../../services/auditService.js';

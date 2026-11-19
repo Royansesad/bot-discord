@@ -1,5 +1,6 @@
 // /store - Lihat dan beli item dari shop
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder } = discordJsPkg;
 import { getPlayer, spendGold, addItem } from '../../services/rpgService.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
 import { formatNumber, rarityEmoji } from '../../utils/helpers.js';

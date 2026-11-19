@@ -1,5 +1,6 @@
 // /play - Memutar lagu di voice channel via Lavalink / NodeLink
-import { SlashCommandBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder } = discordJsPkg;
 import { playMusic } from '../../services/musicService.js';
 import { errorEmbed } from '../../utils/embeds.js';
 

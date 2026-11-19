@@ -3,13 +3,9 @@
 // Features: Realtime Progress Bar, Fixed Player Message, Spotify Pre-buffer,
 // Track Pre-fetching, Multi-Node Failover, & Interactive Remote Control UI.
 // ============================================
+import discordJsPkg from 'discord.js';
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = discordJsPkg;
 import { Shoukaku, Connectors } from 'shoukaku';
-import {
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-} from 'discord.js';
 import config from '../config.js';
 import { logError } from '../utils/errorManager.js';
 import {

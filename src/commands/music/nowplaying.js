@@ -1,5 +1,6 @@
 // /nowplaying - Tampilkan info lagu yang sedang diputar
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import { getQueue } from '../../services/musicService.js';
 import { errorEmbed } from '../../utils/embeds.js';
 import config from '../../config.js';

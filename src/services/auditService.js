@@ -2,7 +2,8 @@
 // auditService.js - Audit Log Service
 // Mencatat semua aksi admin ke database dan channel
 // ============================================
-import { EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { EmbedBuilder } = discordJsPkg;
 import config from '../config.js';
 
 /**

@@ -1,7 +1,8 @@
 // ============================================
 // embeds.js - Reusable Embed Builders
 // ============================================
-import { EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { EmbedBuilder } = discordJsPkg;
 import config from '../config.js';
 
 /**

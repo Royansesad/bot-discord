@@ -2,7 +2,8 @@
 // deploy-commands.js - Register slash commands ke Discord
 // Jalankan: node src/deploy-commands.js
 // ============================================
-import { REST, Routes } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { REST, Routes } = discordJsPkg;
 import { readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';

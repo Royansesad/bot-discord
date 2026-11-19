@@ -1,5 +1,6 @@
 // /lavalink - Kelola & Scrape Lavalink Nodes
-import { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = discordJsPkg;
 import { getShoukaku } from '../../services/musicService.js';
 import {
   getNodeInfo,

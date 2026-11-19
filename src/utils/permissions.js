@@ -1,7 +1,8 @@
 // ============================================
 // permissions.js - Permission Validation
 // ============================================
-import { PermissionFlagsBits } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { PermissionFlagsBits } = discordJsPkg;
 import { errorEmbed } from './embeds.js';
 
 /**

@@ -1,5 +1,6 @@
 // /weekly - Klaim reward mingguan
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import { getPlayer, addXp, addGold, addItem } from '../../services/rpgService.js';
 import { checkPlayerCooldown, setPlayerCooldown, formatCooldown } from '../../utils/cooldown.js';
 import { errorEmbed } from '../../utils/embeds.js';

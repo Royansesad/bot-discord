@@ -4,11 +4,11 @@
 // Turn-based interactive system with buttons
 // Supports special effects: DOT, HOT, Shield, Immunity
 // ============================================
+import discordJsPkg from 'discord.js';
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = discordJsPkg;
 import { calculateDamage, randomInt, randomChance, randomPick } from '../utils/helpers.js';
 import { getEffectiveStats } from './rpgService.js';
 import { ALL_ITEMS, getItemById } from '../data/items.js';
-import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
-
 // ============================================
 // Special Effects System
 // ============================================

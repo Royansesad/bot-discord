@@ -2,7 +2,8 @@
 // commandLoader.js - Dynamic Command Loader
 // Memuat semua command dari folder commands/
 // ============================================
-import { Collection } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { Collection } = discordJsPkg;
 import { readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';

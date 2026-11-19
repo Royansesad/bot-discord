@@ -1,4 +1,5 @@
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import discordJsPkg from 'discord.js';
+const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import { getShoukaku } from '../../services/musicService.js';
 import { getNodeInfo, getStateLabel, reconnectNodes, disableNode } from '../../services/lavalinkNodes.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
