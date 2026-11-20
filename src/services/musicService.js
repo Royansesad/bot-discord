@@ -36,6 +36,15 @@ const VOICE_SETTLE_MS = 400;
 // beri waktu node mengisi buffer, lalu unpause. Bisa diubah lewat env.
 const LAVALINK_WARMUP_MS = Math.max(0, Number(process.env.LAVALINK_WARMUP_MS) || 1500);
 
+// Watchdog pemutaran. Lavalink v4 berhenti mengirim playerUpdate saat track
+// selesai, sehingga posisi terakhir membeku rata-rata di (durasi - interval
+// update). Watchdog durasi memakai anchor monotonik yang tidak direcalibrate,
+// dan watchdog posisi membeku menangani lagu yang berhenti sebelum durasi.
+const WATCHDOG_GRACE_MS = 5000;
+const WATCHDOG_STALL_MS = 45000;
+// Failover yang menggantung tidak boleh memblokir antrean selamanya.
+const FAILOVER_TIMEOUT_MS = 45000;
+
 /**
  * Putar track encoded dengan warm-up buffer: playTrack(paused) → tunggu → unpause.
  * Dipakai oleh jalur play normal maupun reconnect/failover supaya perilakunya sama.
@@ -434,6 +443,15 @@ async function reconnectShoukakuPlayer(guildId, { resume = false, excludeNodeNam
     if (!encoded) encoded = extractEncodedTrack(song.track);
     if (encoded) {
       await playEncodedTrack(player, encoded, position, wasPaused);
+
+      // Lagu dilanjutkan dari `position`, jadi anchor watchdog harus
+      // mengakui posisi tersebut — kalau tidak, watchdog akan menembak
+      // lagu ini sebagai "sudah selesai" tepat setelah failover.
+      const resumeAnchor = Date.now() - position - (song.pausedDuration || 0);
+      song.startedAt = resumeAnchor;
+      song.watchdogAnchor = resumeAnchor;
+      song._lastReportedPos = null;
+      song._lastReportedAt = 0;
     }
   }
 
@@ -468,6 +486,7 @@ async function handleNodeFailover(guildId, reason = 'Node Error') {
     return;
   }
   queue._failoverInProgress = true;
+  queue._failoverStartedAt = Date.now();
 
   const currentPos = queue.player?.position || 0;
   const currentNodeName = queue.player?.node?.name;
@@ -603,6 +622,7 @@ function createQueue(guildId, voiceChannel, textChannel, backend = 'shoukaku') {
     progressInterval: null,
     _failoverRetries: 0,
     _failoverInProgress: false,
+    _failoverStartedAt: 0,
     _skipRequested: false,
   };
 }
@@ -613,6 +633,13 @@ function prepareSong(queue, song) {
   song.pausedAt = null;
   // Reset posisi render supaya progress bar tidak "nyangkut" di akhir saat loop
   song.lastRenderedPos = 0;
+  // Anchor monotonik untuk watchdog. TIDAK pernah di-recalibrate oleh
+  // buildPlayerPayload: posisi node v4 membeku saat lagu selesai (node
+  // membatalkan playerUpdate), jadi recalibration berbasis posisi akan
+  // menarik anchor ini mundur dan membuat watchdog tidak pernah terpenuhi.
+  song.watchdogAnchor = Date.now();
+  song._lastReportedPos = null;
+  song._lastReportedAt = 0;
   // Catatan: `prefetchedTrack` JANGAN dihapus di sini — prefetch sudah dilakukan
   // saat lagu masuk antrean dan dipakai langsung oleh playShoukakuSong.
 }
@@ -706,26 +733,35 @@ function attachPlayerEvents(player, guildId) {
     const queue = queues.get(guildId);
     if (!queue) return;
 
-    // Lavalink mengirim reason HURUF BESAR (FINISHED / STOPPED / REPLACED /
-    // LOAD_FAILED). Perbandingan huruf kecil sebelumnya tidak pernah cocok,
-    // sehingga event 'REPLACED' dari track lama ikut memajukan antrean.
-    const reason = String(data?.reason || '').toUpperCase();
+    // Lavalink v4 memakai reason huruf kecil (finished / stopped / replaced /
+    // loadFailed / cleanup), v3 memakai LOAD_FAILED. Normalisasi keduanya ke
+    // bentuk huruf besar agar perbandingan di bawah tidak meleset.
+    const rawReason = String(data?.reason || '');
+    const reason = rawReason.toUpperCase().replace(/^LOADFAILED$/, 'LOAD_FAILED');
     if (reason === 'REPLACED') return;
 
+    // Flag failover yang menggantung jangan sampai memblokir antrean selamanya.
+    // Dipindah ke sini (sebelum filter event usang) agar event 'end' yang
+    // tiba saat failover masih jalan bisa membersihkan flag dan memajukan antrean.
+    if (queue._failoverInProgress) {
+      queue._failoverInProgress = false;
+      queue._failoverStartedAt = 0;
+    }
+
     // Abaikan event 'end' dari track yang bukan lagi lagu aktif (event usang
-    // bisa datang setelah failover / playTrack berikutnya).
+    // bisa datang setelah failover / playTrack berikutnya). Bandingkan juga
+    // dengan player.track milik Shoukaku, karena itu track yang benar-benar
+    // terakhir diputar di node.
     const endedTrack = data?.track?.encoded || data?.track;
     const currentTracks = [
       extractEncodedTrack(queue.currentlyPlaying?.track),
       extractEncodedTrack(queue.currentlyPlaying?.prefetchedTrack),
+      player.track,
     ].filter(Boolean);
     if (endedTrack && currentTracks.length > 0 && !currentTracks.includes(endedTrack)) {
       console.warn(`[end] event usang diabaikan (${reason}).`);
       return;
     }
-
-    // Flag failover yang menggantung jangan sampai memblokir antrean selamanya.
-    if (queue._failoverInProgress) queue._failoverInProgress = false;
 
     // Anti double-advance: dua event 'end' dalam waktu singkat hanya diproses sekali.
     const now = Date.now();
@@ -852,8 +888,19 @@ export function buildPlayerPayload(guildId) {
       const elapsed = Date.now() - song.startedAt - (song.pausedDuration || 0);
       const reported = getReportedPosition(queue);
 
-      // Hanya recalibrate jika ada drift sangat besar (> 5 detik, misal dari seek / reconnect)
-      if (reported > 0 && Math.abs(elapsed - reported) > 5000) {
+      // Deteksi apakah posisi node benar-benar bergerak. Lavalink v4 membatalkan
+      // playerUpdate saat track selesai, sehingga posisi terakhir membeku. Kalau
+      // posisi membeku, jangan dipakai untuk recalibrate — selain membuat
+      // progress bar "nyangkut", ini juga bisa menyeret anchor watchdog mundur.
+      const positionMoved = reported !== song._lastReportedPos;
+      if (positionMoved) {
+        song._lastReportedPos = reported;
+        song._lastReportedAt = Date.now();
+      }
+
+      // Hanya recalibrate jika ada drift sangat besar (> 5 detik, misal dari
+      // seek / reconnect) DAN posisi node bergerak (data masih segar).
+      if (reported > 0 && positionMoved && Math.abs(elapsed - reported) > 5000) {
         song.startedAt = Date.now() - reported - (song.pausedDuration || 0);
         currentPos = reported;
       } else {
@@ -1328,21 +1375,63 @@ function startProgressInterval(queue) {
   if (queue.progressInterval) clearInterval(queue.progressInterval);
   queue.progressInterval = setInterval(() => {
     const current = queues.get(guildId);
-    if (!current?.currentlyPlaying || current.isPaused) return;
+    if (!current) return;
+
+    // Pemulihan: advanceQueue mengosongkan currentlyPlaying lalu processQueue
+    // mengisinya lagi secara sinkron. Kalau antrean punya lagu tapi tidak ada
+    // lagu aktif, prosesi antrean belum jalan — picu lagi supaya tidak stuck.
+    if (!current.currentlyPlaying && current.songs.length > 0) {
+      if (!current._stuckRecoverAt || Date.now() - current._stuckRecoverAt > 5000) {
+        current._stuckRecoverAt = Date.now();
+        console.warn(`[watchdog] antrean ${guildId} tanpa lagu aktif, memicu processQueue.`);
+        processQueue(guildId);
+      }
+      return;
+    }
+
+    if (!current.currentlyPlaying || current.isPaused) return;
 
     updatePlayerMessage(guildId);
 
-    // Watchdog: jika event 'end' tidak pernah datang (node lama / packet loss)
-    // lagu bisa "mentok" selamanya dan panel tetap menampilkan lagu sebelumnya.
-    // Saat waktu putar melewati durasi + 5 detik, paksa majukan antrean.
     const song = current.currentlyPlaying;
+
+    // Failover yang menggantung tidak boleh memblokir antrean selamanya.
+    if (current._failoverInProgress && current._failoverStartedAt) {
+      if (Date.now() - current._failoverStartedAt > FAILOVER_TIMEOUT_MS) {
+        console.warn(`[watchdog] failover ${guildId} timeout, memaksa lanjut.`);
+        current._failoverInProgress = false;
+        current._failoverRetries = 0;
+        current._lastAdvanceAt = Date.now();
+        advanceQueue(guildId);
+        return;
+      }
+    }
+
+    // Watchdog durasi: pakai anchor monotonik (tidak direcalibrate oleh
+    // buildPlayerPayload). Jika event 'end' tidak pernah datang (node lambat /
+    // packet loss) lagu bisa "mentok" selamanya dan panel tetap menampilkan
+    // lagu sebelumnya. Saat waktu putar melewati durasi + grace, majukan antrean.
     const duration = Number(song.durationMs) || 0;
-    if (duration > 0 && song.startedAt && !current._failoverInProgress) {
-      const elapsed = Date.now() - song.startedAt - (song.pausedDuration || 0);
-      if (elapsed > duration + 5000) {
+    const anchor = song.watchdogAnchor || song.startedAt;
+    if (duration > 0 && anchor && !current._failoverInProgress) {
+      const elapsed = Date.now() - anchor - (song.pausedDuration || 0);
+      if (elapsed > duration + WATCHDOG_GRACE_MS) {
         console.warn(`[watchdog] "${song.title}" dianggap selesai, memajukan antrean.`);
         current._lastAdvanceAt = Date.now();
-        advanceQueue(guildId, { allowLoop: false });
+        advanceQueue(guildId, { allowLoop: true });
+        return;
+      }
+    }
+
+    // Watchdog posisi membeku: posisi node berhenti berubah untuk waktu lama
+    // sementara lagu tidak dijeda. Ini menandakan stream mentok di tengah lagu
+    // (durasi tidak diketahui / node berhenti mengirim update). Lewati live
+    // stream yang posisinya bisa legit berhenti sejenak.
+    if (!current._failoverInProgress && !song.isStream && song._lastReportedAt && song._lastReportedPos > 0) {
+      if (Date.now() - song._lastReportedAt > WATCHDOG_STALL_MS) {
+        console.warn(`[watchdog] posisi "${song.title}" membeku, memajukan antrean.`);
+        current._lastAdvanceAt = Date.now();
+        advanceQueue(guildId, { allowLoop: true });
       }
     }
   }, 2000);
@@ -1428,6 +1517,9 @@ async function processQueue(guildId, initialInteraction = null) {
     nextSong.startedAt = Date.now();
     nextSong.pausedDuration = 0;
     nextSong.lastRenderedPos = 0;
+    nextSong.watchdogAnchor = Date.now();
+    nextSong._lastReportedPos = null;
+    nextSong._lastReportedAt = 0;
   } catch (err) {
     logError('Lavalink Play Error', err);
 
@@ -1533,6 +1625,13 @@ async function processNativeQueue(guildId, initialInteraction = null) {
   try {
     await ensureNativeSession(queue);
     await native.playNativeTrack(queue, nextSong);
+
+    nextSong.startedAt = Date.now();
+    nextSong.pausedDuration = 0;
+    nextSong.lastRenderedPos = 0;
+    nextSong.watchdogAnchor = Date.now();
+    nextSong._lastReportedPos = null;
+    nextSong._lastReportedAt = 0;
   } catch (err) {
     logError('Native Play Error', err);
     queue.textChannel?.send(`❌ Gagal memutar **${nextSong.title}**: ${err.message}`).catch(() => {});
@@ -1698,6 +1797,12 @@ function setPauseTimestamps(queue, paused) {
   if (song.pausedAt) {
     song.pausedDuration = (song.pausedDuration || 0) + (Date.now() - song.pausedAt);
     song.pausedAt = null;
+
+    // Watchdog posisi membeku tidak boleh langsung menembak lagu yang baru
+    // di-resume setelah paused lama: posisi node memang tidak bergerak saat
+    // jeda, sehingga timestamp terakhir masih usang.
+    song._lastReportedPos = getReportedPosition(queue);
+    song._lastReportedAt = Date.now();
   }
 }
 
