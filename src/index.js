@@ -12,6 +12,7 @@ import { onReady } from './events/ready.js';
 import { logError } from './utils/errorManager.js';
 import { initializeShoukaku, cleanupAll, getActiveEngine } from './services/musicService.js';
 import { detectNativeTools } from './services/nativeEngine.js';
+import { warmProxy } from './services/proxyManager.js';
 
 // Inisialisasi Prisma client
 const prisma = new PrismaClient();
@@ -64,6 +65,10 @@ try {
   }
   console.log(`🎛️ Engine audio aktif: ${getActiveEngine().toUpperCase()}`);
 }
+
+// Hangatkan proxy native di background agar /play pertama tidak menunggu
+// proses fetch + health-check proxy publik.
+warmProxy().catch(() => {});
 
 // Event: Bot ready
 client.once('ready', () => {

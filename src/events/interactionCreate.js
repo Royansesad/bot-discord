@@ -22,6 +22,7 @@ import {
 } from '../services/musicService.js';
 import { getNodeInfo, getStateLabel } from '../services/lavalinkNodes.js';
 import { detectNativeTools } from '../services/nativeEngine.js';
+import { getProxyStatus } from '../services/proxyManager.js';
 import config from '../config.js';
 
 // Map untuk menyimpan active message collectors pencarian musik per user
@@ -384,15 +385,23 @@ async function handleMusicButton(client, interaction) {
         // Engine native tidak memakai node Shoukaku
         if (queue?.backend === 'native') {
           const tools = detectNativeTools();
+          const proxy = getProxyStatus();
+          const proxyLabel = proxy.mode === 'disabled'
+            ? '`nonaktif`'
+            : proxy.active
+              ? `\`aktif\` (${proxy.mode})`
+              : proxy.mode === 'static'
+                ? '`menunggu`'
+                : '`auto` (mencari proxy...)';
 
           const embed = new EmbedBuilder()
             .setColor(config.colors.info)
             .setTitle('🪶 Native Engine Status')
-            .setDescription('Pemutaran berjalan langsung di proses bot (tanpa Lavalink/NodeLink).')
+            .setDescription('Pemutaran berjalan langsung di proses bot (tanpa server Lavalink).')
             .addFields(
               { name: 'youtubei.js', value: tools.youtubei ? '`aktif` (tanpa cookie)' : '`tidak tersedia`', inline: true },
               { name: 'FFmpeg', value: tools.ffmpeg ? '`tersedia`' : '`tidak ada` (Opus passthrough)', inline: true },
-              { name: 'Proxy', value: tools.proxy ? '`aktif`' : '`tidak diatur`', inline: true },
+              { name: 'Proxy', value: proxyLabel, inline: true },
               { name: 'Volume realtime', value: tools.ffmpeg ? '✅ Didukung' : '⚠️ Butuh FFmpeg', inline: true }
             )
             .setTimestamp();

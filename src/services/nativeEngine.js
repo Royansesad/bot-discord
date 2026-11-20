@@ -1,5 +1,5 @@
 // ============================================
-// nativeEngine.js - Native Audio Engine (tanpa Lavalink/NodeLink)
+// nativeEngine.js - Native Audio Engine (tanpa server Lavalink)
 // discord.js + @discordjs/voice + youtubei.js (Innertube).
 //
 // Tidak memakai cookie, yt-dlp, atau binary eksternal untuk YouTube.
@@ -12,8 +12,15 @@
 // ============================================
 import { spawn, spawnSync } from 'node:child_process';
 import { Readable } from 'node:stream';
-import { ProxyAgent } from 'undici';
 import { Innertube, Parser, Platform } from 'youtubei.js';
+import {
+  ensureProxyReady,
+  getActiveProxyUrl,
+  getProxyDispatcher,
+  getStaticProxy,
+  isProxyActive,
+  reportProxyFailure,
+} from './proxyManager.js';
 import {
   AudioPlayerStatus,
   NoSubscriberBehavior,
@@ -60,45 +67,22 @@ const tools = {
 };
 
 // ============================================
-// Proxy opsional (YOUTUBE_PROXY)
+// Proxy otomatis (proxyManager.js)
 // ============================================
-// Berguna saat host googlevideo diblokir / DNS-nya di-hijack ISP.
-// Contoh: socks5://127.0.0.1:40000 (DNS remote) atau http://127.0.0.1:8080
-let proxyDispatcher = null;
-let proxyDispatcherUrl = '';
-
-function getProxyUrl() {
-  return String(process.env.YOUTUBE_PROXY || '').trim();
-}
-
-function getProxyDispatcher() {
-  const url = getProxyUrl();
-  if (!url) return null;
-
-  if (proxyDispatcher && proxyDispatcherUrl === url) return proxyDispatcher;
-
-  try {
-    proxyDispatcher = new ProxyAgent({ uri: url, connectTimeout: 20000 });
-    proxyDispatcherUrl = url;
-    return proxyDispatcher;
-  } catch (err) {
-    proxyDispatcher = null;
-    proxyDispatcherUrl = '';
-    throw new Error(`YOUTUBE_PROXY tidak valid: ${shortError(err)}`);
-  }
-}
-
-/**
- * fetch yang otomatis memakai proxy bila YOUTUBE_PROXY diatur.
- * Dipakai untuk request API YouTube maupun unduhan media.
- */
+// YOUTUBE_PROXY tetap didukung sebagai override manual. Tanpa itu, proxy
+// diambil & diuji otomatis dari sumber publik, lalu dipakai untuk request API
+// YouTube maupun unduhan media (host googlevideo yang diblokir ISP).
 function proxiedFetch(input, init) {
-  try {
-    const dispatcher = getProxyDispatcher();
-    return dispatcher ? fetch(input, { ...init, dispatcher }) : fetch(input, init);
-  } catch (err) {
-    return Promise.reject(err);
-  }
+  const dispatcher = getProxyDispatcher();
+  if (!dispatcher) return fetch(input, init);
+
+  return fetch(input, { ...init, dispatcher }).catch((err) => {
+    // Abort dari timeout internal bukan bukti proxy mati.
+    if (err?.name !== 'AbortError' && isProxyActive()) {
+      reportProxyFailure(getActiveProxyUrl());
+    }
+    throw err;
+  });
 }
 
 // Regex URL YouTube (watch, youtu.be, shorts, live, embed, music.youtube.com)
@@ -130,7 +114,7 @@ export function detectNativeTools(force = false) {
   tools.ffmpegPath = ffmpegPath;
   tools.ffmpeg = probeBinary(ffmpegPath);
   tools.youtubei = true;
-  tools.proxy = Boolean(getProxyUrl());
+  tools.proxy = Boolean(getStaticProxy() || getActiveProxyUrl());
   tools.checked = true;
 
   return { ...tools };
@@ -265,6 +249,11 @@ export async function searchNative(query) {
   if (!clean) throw new Error('Judul lagu tidak boleh kosong.');
 
   const videoId = parseYouTubeId(clean);
+
+  // Siapkan proxy otomatis lebih dulu. Pencarian tetap bisa berjalan langsung
+  // jika belum ada proxy sehat, jadi hasilnya tidak diblokir oleh refresh.
+  await ensureProxyReady();
+
   const yt = await getSearchClient();
 
   // Sesi streaming sengaja TIDAK dihangatkan di sini: membuat klien VISIONOS
@@ -317,7 +306,7 @@ export async function searchNative(query) {
   if (video.isLive) {
     throw new Error(
       'Live stream belum didukung engine native (audio live dipecah per segmen). ' +
-      'Gunakan engine Lavalink/NodeLink untuk siaran langsung.'
+      'Gunakan engine Lavalink untuk siaran langsung.'
     );
   }
 
@@ -358,7 +347,9 @@ async function openAudioSource(videoId, preferredClient = null) {
   const failures = [];
   let sawAudioFormats = false;
   let sawOpusFormat = false;
-  const usingProxy = Boolean(getProxyUrl());
+
+  await ensureProxyReady();
+  const usingProxy = isProxyActive();
 
   // Batasi total waktu percobaan agar command musik tidak menggantung lama.
   // Proxy (terutama WARP) bisa lebih lambat saat koneksi pertama.
@@ -396,7 +387,7 @@ async function openAudioSource(videoId, preferredClient = null) {
     if (info.basic_info?.is_live) {
       throw new Error(
         'Live stream belum didukung engine native (audio live dipecah per segmen). ' +
-        'Gunakan engine Lavalink/NodeLink untuk siaran langsung.'
+        'Gunakan engine Lavalink untuk siaran langsung.'
       );
     }
 
@@ -473,6 +464,9 @@ async function openAudioSource(videoId, preferredClient = null) {
           // Body dari response gagal harus dibatalkan, kalau tidak undici menyimpan
           // buffer responsya sampai GC — ini ikut menyumbang memori saat retry.
           await response.body?.cancel().catch(() => {});
+          if ([407, 502, 503, 504].includes(response.status)) {
+            reportProxyFailure(getActiveProxyUrl());
+          }
           failures.push(`${clientType}: HTTP ${response.status}`);
           break;
         }
@@ -493,7 +487,7 @@ async function openAudioSource(videoId, preferredClient = null) {
   if (!ffmpeg && sawAudioFormats && !sawOpusFormat) {
     throw new Error(
       'Format Opus tidak tersedia untuk lagu ini dan FFmpeg tidak terpasang. ' +
-      'Install FFmpeg atau gunakan engine Lavalink/NodeLink.'
+      'Install FFmpeg atau gunakan engine Lavalink.'
     );
   }
 
@@ -501,8 +495,8 @@ async function openAudioSource(videoId, preferredClient = null) {
   throw new Error(
     `Gagal memutar audio YouTube${lastFailure ? ` (${lastFailure})` : ''}. ` +
     'Jika ini terus terjadi, host googlevideo mungkin diblokir/DNS di-hijack — ' +
-    'set YOUTUBE_PROXY (mis. socks5://127.0.0.1:40000), gunakan engine Lavalink/NodeLink, ' +
-    'atau coba lagu lain.'
+    'bot sudah mencoba proxy otomatis; set YOUTUBE_PROXY (proxy HTTP) untuk override, ' +
+    'gunakan engine Lavalink, atau coba lagu lain.'
   );
 }
 
@@ -538,7 +532,7 @@ function totalFromContentRange(value) {
  * dari yang diminta (akhir file), HTTP 416, atau stream di-destroy.
  */
 async function* readMediaChunks({ url, headers, totalLength }, controller, refresh) {
-  const usingProxy = Boolean(getProxyUrl());
+  const usingProxy = isProxyActive();
   const headerTimeout = usingProxy ? 25000 : 12000;
 
   let source = {
@@ -605,6 +599,11 @@ async function* readMediaChunks({ url, headers, totalLength }, controller, refre
 
       if (!response.ok || !response.body) {
         await response.body?.cancel().catch(() => {});
+
+        // Status khas proxy bermasalah: cari proxy pengganti di background.
+        if ([407, 502, 503, 504].includes(response.status)) {
+          reportProxyFailure(getActiveProxyUrl());
+        }
 
         // 403 biasanya berarti URL media sudah tidak berlaku. Ambil URL baru.
         if (response.status === 403 && typeof refresh === 'function' && refreshCount < MEDIA_MAX_REFRESH) {
@@ -775,7 +774,7 @@ async function createNativeStream(song) {
     input.destroy();
     throw new Error(
       `Sumber audio berformat "${ext || 'unknown'}" membutuhkan FFmpeg. ` +
-      'Install FFmpeg, atau gunakan engine Lavalink/NodeLink untuk lagu ini.'
+      'Install FFmpeg, atau gunakan engine Lavalink untuk lagu ini.'
     );
   }
 

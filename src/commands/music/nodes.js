@@ -30,7 +30,7 @@ export const data = new SlashCommandBuilder()
   .addSubcommand(sub =>
     sub
       .setName('disable')
-      .setDescription('Menonaktifkan node Lavalink/NodeLink tertentu secara manual')
+      .setDescription('Menonaktifkan node Lavalink tertentu secara manual')
       .addStringOption(opt =>
         opt
           .setName('name')

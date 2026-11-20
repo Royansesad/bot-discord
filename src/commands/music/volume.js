@@ -22,17 +22,23 @@ export async function execute(interaction, client) {
     return interaction.reply({ embeds: [errorEmbed('❌ Error', 'Kamu harus berada di Voice Channel.')], flags: 64 });
   }
 
+  // Acknowledge lebih dulu. Pemulihan sesi/player bisa memakan lebih dari 3
+  // detik; tanpa defer, Discord menampilkan "The application did not respond".
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ flags: 64 });
+  }
+
   const level = interaction.options.getInteger('level');
 
   // Jika tidak ada argumen, tampilkan volume saat ini
   if (level === null) {
     const queue = getQueue(interaction.guildId);
     if (!queue) {
-      return interaction.reply({ embeds: [errorEmbed('❌ Error', 'Tidak ada musik yang sedang diputar.')], flags: 64 });
+      return interaction.editReply({ embeds: [errorEmbed('❌ Error', 'Tidak ada musik yang sedang diputar.')] });
     }
 
     const volumeBar = createVolumeBar(queue.volume);
-    return interaction.reply({
+    return interaction.editReply({
       embeds: [successEmbed('🔊 Volume Saat Ini', `${volumeBar}\n**${queue.volume}%**`)],
     });
   }
@@ -42,11 +48,11 @@ export async function execute(interaction, client) {
     const volumeBar = createVolumeBar(newVolume);
     const emoji = newVolume === 0 ? '🔇' : newVolume < 50 ? '🔉' : '🔊';
 
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [successEmbed(`${emoji} Volume Diubah`, `${volumeBar}\n**${newVolume}%**`)],
     });
   } catch (error) {
-    await interaction.reply({ embeds: [errorEmbed('❌ Error', error.message)], flags: 64 });
+    await interaction.editReply({ embeds: [errorEmbed('❌ Error', error.message)] }).catch(() => {});
   }
 }
 

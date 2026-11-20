@@ -16,18 +16,26 @@ export async function execute(interaction, client) {
     return interaction.reply({ embeds: [errorEmbed('❌ Error', 'Kamu harus berada di Voice Channel.')], flags: 64 });
   }
 
-  const result = await stopOrPlayNext(interaction.guildId);
-
-  if (result.playedNext) {
-    return interaction.reply({
-      embeds: [successEmbed(
-        '⏭️ Lagu Berikutnya',
-        `**${result.skipped?.title || 'Lagu sebelumnya'}** dihentikan karena masih ada antrean — lagu berikutnya sedang diputar.`
-      )],
-    });
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply();
   }
 
-  return interaction.reply({
-    embeds: [successEmbed('⏹️ Musik Dihentikan', 'Antrean dibersihkan dan bot keluar dari voice channel.')],
-  });
+  try {
+    const result = await stopOrPlayNext(interaction.guildId);
+
+    if (result.playedNext) {
+      return interaction.editReply({
+        embeds: [successEmbed(
+          '⏭️ Lagu Berikutnya',
+          `**${result.skipped?.title || 'Lagu sebelumnya'}** dihentikan karena masih ada antrean — lagu berikutnya sedang diputar.`
+        )],
+      });
+    }
+
+    return interaction.editReply({
+      embeds: [successEmbed('⏹️ Musik Dihentikan', 'Antrean dibersihkan dan bot keluar dari voice channel.')],
+    });
+  } catch (error) {
+    return interaction.editReply({ embeds: [errorEmbed('❌ Error', error.message)] }).catch(() => {});
+  }
 }

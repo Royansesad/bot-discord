@@ -1,42 +1,106 @@
 // ============================================
-// lavalinkNodes.js - Lavalink & NodeLink Engine Node Manager
-// Supports Lavalink Multi-Nodes + NodeLink v3.0.0 Server + Health Check + Priority Router
+// lavalinkNodes.js - Lavalink Node Manager
+// Supports Lavalink Multi-Nodes + Health Check + Priority Router
 // ============================================
 import { logError } from '../utils/errorManager.js';
 
 /**
- * Node Lavalink utama & sekunder bawaan
+ * Node Lavalink publik bawaan.
+ *
+ * Daftar ini diambil dari freelavalink.serenetia.com/list (semua node yang
+ * aktif saat daftar diperbarui) ditambah node bonus Trinium. Node publik bisa
+ * on/off kapan saja, jadi multi-node failover tetap menjadi pengaman utama.
  */
 const HARDCODED_LAVALINK_NODES = [
   {
-    name: 'Serenita (Main)',
-    url: 'lavalinkv4.serenetia.com',
+    name: 'Sereneta (SSL)',
+    url: 'lavalinkv4.serenetia.com:443',
     auth: 'https://seretia.link/discord',
     secure: true,
     priority: 'main',
     engine: 'lavalink',
   },
   {
-    name: 'AjieBlogs (Secondary)',
-    url: 'lava-v4.ajieblogs.eu.org:80',
-    auth: 'https://dsc.gg/ajidevserver',
+    name: 'Sereneta (HTTP)',
+    url: 'lavalinkv4.serenetia.com:80',
+    auth: 'https://seretia.link/discord',
+    secure: false,
+    priority: 'fallback',
+    engine: 'lavalink',
+  },
+  {
+    name: 'MilloHost (SSL)',
+    url: 'lava-v4.millohost.my.id:443',
+    auth: 'https://discord.gg/mjS5J2K3ep',
+    secure: true,
+    priority: 'secondary',
+    engine: 'lavalink',
+  },
+  {
+    name: 'Kasawa (Public)',
+    url: 'lava2.kasawa.pro:2334',
+    auth: 'youshallnotpass',
     secure: false,
     priority: 'secondary',
     engine: 'lavalink',
   },
-];
-
-/**
- * Node NodeLink v3.0.0 utama bawaan
- */
-const HARDCODED_NODELINK_NODES = [
   {
-    name: 'HanyaNodeLink (NodeLink v3.0.0)',
-    url: 'hanyanodelink.xs001.jrnm.app:443',
-    auth: 'antekantekasing',
+    name: 'Jirayu (SSL)',
+    url: 'lavalink.jirayu.net:443',
+    auth: 'youshallnotpass',
     secure: true,
-    priority: 'main',
-    engine: 'nodelink',
+    priority: 'secondary',
+    engine: 'lavalink',
+  },
+  {
+    name: 'Jirayu (13592)',
+    url: 'lavalink.jirayu.net:13592',
+    auth: 'youshallnotpass',
+    secure: false,
+    priority: 'fallback',
+    engine: 'lavalink',
+  },
+  {
+    name: 'Nazha (SSL)',
+    url: 'lavalink.nazha.online:443',
+    auth: 'nazhafreelava',
+    secure: true,
+    priority: 'secondary',
+    engine: 'lavalink',
+  },
+  {
+    name: 'Trinium (2333)',
+    url: 'lavalink.triniumhost.com:2333',
+    auth: 'kirito',
+    secure: false,
+    priority: 'fallback',
+    engine: 'lavalink',
+  },
+  {
+    name: 'Trinium (4333)',
+    url: 'lavalink.triniumhost.com:4333',
+    auth: 'free',
+    secure: false,
+    priority: 'fallback',
+    engine: 'lavalink',
+  },
+  {
+    name: 'Trinium v4 (SSL)',
+    url: 'lavalink-v4.triniumhost.com:443',
+    auth: 'free',
+    secure: true,
+    priority: 'secondary',
+    engine: 'lavalink',
+  },
+  {
+    // Identifier dari provider tetap dipertahankan, tetapi node ini kompatibel
+    // Lavalink sehingga tidak butuh engine NodeLink terpisah.
+    name: 'trinium-nodelink',
+    url: 'nodelink.triniumhost.com:443',
+    auth: 'free',
+    secure: true,
+    priority: 'secondary',
+    engine: 'lavalink',
   },
 ];
 
@@ -55,9 +119,10 @@ const DISCOVERY_SOURCES = [
 // ============================================
 const nodeConfigs = new Map();
 
-function normEngineName(node) {
-  const name = String(node?.name || '').toLowerCase();
-  return name.includes('nodelink') ? 'nodelink' : 'lavalink';
+function normEngineName() {
+  // Semua node sekarang memakai protokol Lavalink. NodeLink tidak lagi menjadi
+  // engine terpisah.
+  return 'lavalink';
 }
 
 /**
@@ -118,7 +183,7 @@ export function getNodeEngine(name) {
 }
 
 /**
- * Test keaktifan & kesehatan node (Lavalink / NodeLink) via HTTP REST ping
+ * Test keaktifan & kesehatan node Lavalink via HTTP REST ping
  * Memverifikasi https dan http untuk mencegah ECONNREFUSED karena kesalahan port/SSL
  */
 export async function testNodeHealth(url, auth, secure = false, timeoutMs = 5000) {
@@ -268,7 +333,7 @@ export async function getDatabaseNodes(prisma) {
       secure: n.secure,
       priority: n.priority || 'secondary',
       isCustom: true,
-      engine: n.name.toLowerCase().includes('nodelink') ? 'nodelink' : 'lavalink',
+      engine: 'lavalink',
     }));
   } catch (err) {
     logError('Lavalink DB Fetch', err);
@@ -435,7 +500,7 @@ export function enableNode(name) {
 }
 
 /**
- * Ambil semua Lavalink & NodeLink nodes
+ * Ambil semua node Lavalink
  * mode: 'startup' = hanya hardcoded + DB (cepat, tanpa scraping)
  *        'full' = termasuk scraped nodes (untuk auto-updater)
  */
@@ -448,7 +513,6 @@ export async function getAllNodes(prisma = null, mode = 'startup') {
   // Saat startup, HANYA gunakan hardcoded + DB nodes (tanpa scraping)
   if (mode === 'startup') {
     allNodes = deduplicateNodes([
-      ...HARDCODED_NODELINK_NODES,
       ...HARDCODED_LAVALINK_NODES,
       ...dbNodes,
     ]);
@@ -466,7 +530,6 @@ export async function getAllNodes(prisma = null, mode = 'startup') {
     const limitedDarren = discoveredDarren.slice(0, 3);
 
     allNodes = deduplicateNodes([
-      ...HARDCODED_NODELINK_NODES,
       ...HARDCODED_LAVALINK_NODES,
       ...dbNodes,
       ...limitedAjie,
@@ -489,7 +552,7 @@ export function formatForShoukaku(nodes) {
       auth: node.auth,
       secure: node.secure || false,
       priority: node.priority || 'fallback',
-      engine: node.engine || (node.name.toLowerCase().includes('nodelink') ? 'nodelink' : 'lavalink'),
+      engine: 'lavalink',
     };
 
     // Shoukaku tidak menyimpan NodeOption kita, jadi metadata disimpan di registry sendiri
@@ -622,8 +685,24 @@ export function startNodeAutoUpdater(shoukaku, prisma, intervalMs = 1800000) {
 
       for (const nodeConfig of formatted) {
         if (isNodeDisabled(nodeConfig.name)) continue;
-        // Skip jika node sudah terhubung
-        if (shoukaku.nodes.has(nodeConfig.name)) continue;
+
+        const existing = shoukaku.nodes.get(nodeConfig.name);
+        if (existing) {
+          // Node hardcoded/DB yang sudah terdaftar tetapi terputus dicoba
+          // dihubungkan lagi pada siklus updater (bukan hanya node baru).
+          if (existing.state === 3) {
+            const lastFail = failedNodeCooldowns.get(nodeConfig.name);
+            if (lastFail && (Date.now() - lastFail) < FAILED_NODE_COOLDOWN_MS) continue;
+            console.log(`🔄 Mencoba reconnect node: ${nodeConfig.name}`);
+            // connect() mengembalikan promise; tangani rejection agar tidak
+            // menjadi unhandled rejection saat node benar-benar mati.
+            existing.connect().catch((e) => {
+              failedNodeCooldowns.set(nodeConfig.name, Date.now());
+              console.warn(`⚠️ Reconnect node ${nodeConfig.name} gagal: ${e?.message || e}`);
+            });
+          }
+          continue;
+        }
 
         // Skip jika node masih dalam cooldown karena gagal sebelumnya
         const lastFail = failedNodeCooldowns.get(nodeConfig.name);

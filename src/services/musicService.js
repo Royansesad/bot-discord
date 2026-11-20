@@ -50,11 +50,11 @@ async function sendPreparingReply(interaction) {
 
 let shoukaku = null;
 const queues = new Map();
-let activeEngine = 'lavalink'; // 'lavalink' | 'nodelink' | 'native'
+let activeEngine = 'lavalink'; // 'lavalink' | 'native'
 
 // Engine yang memakai server audio eksternal (Shoukaku)
-export const SHOUKAKU_ENGINES = ['lavalink', 'nodelink'];
-export const VALID_ENGINES = ['lavalink', 'nodelink', 'native'];
+export const SHOUKAKU_ENGINES = ['lavalink'];
+export const VALID_ENGINES = ['lavalink', 'native'];
 
 export function getActiveEngine() {
   return activeEngine;
@@ -169,7 +169,7 @@ export function getShoukaku() {
 }
 
 /**
- * Mendapatkan node terhubung berprioritas tertinggi sesuai Active Engine (Lavalink / NodeLink)
+ * Mendapatkan node terhubung berprioritas tertinggi sesuai Active Engine (Lavalink)
  * Jika excludeNodeName diberikan, menyaring node yang sedang error dan switch ke node cadangan aktif lain
  */
 // Map penalti internal bot per node untuk menaikkan/menurunkan skor prioritas tanpa mengubah read-only property Shoukaku
@@ -234,7 +234,7 @@ function getIdealNodes(excludeNodeName = null) {
 }
 
 /**
- * Mendapatkan node terhubung berprioritas tertinggi sesuai Active Engine (Lavalink / NodeLink)
+ * Mendapatkan node terhubung berprioritas tertinggi sesuai Active Engine (Lavalink)
  * Jika excludeNodeName diberikan, menyaring node yang sedang error dan switch ke node cadangan aktif lain
  */
 function getIdealNode(excludeNodeName = null) {
@@ -249,7 +249,7 @@ function getIdealNode(excludeNodeName = null) {
 async function joinVoiceChannelWithFallback({ guildId, channelId, shardId = 0, deaf = true }, excludeNodeName = null) {
   const candidateNodes = getIdealNodes(excludeNodeName);
   if (candidateNodes.length === 0) {
-    throw new Error('Tidak ada Lavalink/NodeLink node yang terhubung!');
+    throw new Error('Tidak ada node Lavalink yang terhubung!');
   }
 
   let lastError = null;
@@ -275,9 +275,90 @@ async function joinVoiceChannelWithFallback({ guildId, channelId, shardId = 0, d
 }
 
 /**
+ * Deteksi error sesi Lavalink yang sudah tidak valid (node restart / session
+ * expired). Error seperti "Session not found" membuat semua update player
+ * (volume/pause/skip) gagal sampai player dibuat ulang.
+ */
+function isSessionError(error) {
+  const message = String(error?.message || error?.error || error || '').toLowerCase();
+  return (
+    message.includes('session not found') ||
+    message.includes('session does not exist') ||
+    message.includes('session is not valid') ||
+    message.includes('unknown session') ||
+    message.includes('invalid session') ||
+    message.includes('player not found') ||
+    message.includes('the player was not found')
+  );
+}
+
+/**
+ * Buat ulang koneksi Shoukaku untuk guild (player + voice connection).
+ * Dipakai saat sesi node mati / "Session not found". Bila resume=true, lagu
+ * yang sedang diputar dipulihkan pada posisi terakhir di node baru.
+ */
+async function reconnectShoukakuPlayer(guildId, { resume = false, excludeNodeName = null } = {}) {
+  const queue = queues.get(guildId);
+  if (!queue || !shoukaku) return null;
+  if (!queue.voiceChannel?.id) throw new Error('Voice channel antrean tidak diketahui.');
+
+  const song = queue.currentlyPlaying;
+  const position = Math.max(0, Math.floor(queue.player?.position || 0));
+  const wasPaused = Boolean(queue.isPaused);
+
+  // Bersihkan koneksi lama dengan aman sebelum join ulang.
+  try { queue.player?.removeAllListeners(); } catch { /* abaikan */ }
+  try { await shoukaku.leaveVoiceChannel(guildId); } catch { /* belum ada koneksi */ }
+  shoukaku.connections?.delete(guildId);
+  shoukaku.players?.delete(guildId);
+
+  // Beri waktu Discord meng-update voice state.
+  await new Promise((resolve) => setTimeout(resolve, 500));
+
+  const player = await joinVoiceChannelWithFallback({
+    guildId,
+    channelId: queue.voiceChannel.id,
+    shardId: 0,
+    deaf: true,
+  }, excludeNodeName);
+
+  queue.player = player;
+  queue.backend = 'shoukaku';
+  queue._failoverInProgress = false;
+  queue._skipRequested = false;
+  attachPlayerEvents(player, guildId);
+  await player.setGlobalVolume(queue.volume).catch(() => {});
+
+  if (resume && song) {
+    const originalQuery = song.query || song.url || song.title;
+    let encoded = null;
+
+    if (originalQuery) {
+      try {
+        const fresh = await searchTrack(originalQuery, player.node);
+        if (fresh?.track) {
+          encoded = extractEncodedTrack(fresh.track);
+          song.track = fresh.track;
+        }
+      } catch (err) {
+        console.warn(`⚠️ Re-resolve saat reconnect gagal: ${err.message}`);
+      }
+    }
+
+    if (!encoded) encoded = extractEncodedTrack(song.track);
+    if (encoded) {
+      await player.playTrack({ track: { encoded }, position });
+      if (wasPaused) await player.setPaused(true).catch(() => {});
+    }
+  }
+
+  return player;
+}
+
+/**
  * Failover handler yang robust - menangani 3 kasus error utama:
- * 1. Track error pada NodeLink (YouTube extraction gagal) → re-resolve di Lavalink
- * 2. Node disconnect total → pindah ke node cadangan
+ * 1. Track error (YouTube extraction gagal) → re-resolve di node lain
+ * 2. Node disconnect / session mati → pindah ke node cadangan
  * 3. Voice connection timeout → reuse existing connection
  * 
  * Proteksi: failover flag mencegah infinite loop
@@ -303,7 +384,6 @@ async function handleNodeFailover(guildId, reason = 'Node Error') {
   }
   queue._failoverInProgress = true;
 
-  const currentSong = queue.currentlyPlaying;
   const currentPos = queue.player?.position || 0;
   const currentNodeName = queue.player?.node?.name;
 
@@ -330,73 +410,17 @@ async function handleNodeFailover(guildId, reason = 'Node Error') {
   }
 
   try {
-    // === STEP 1: Bersihkan koneksi lama dengan aman ===
-    try {
-      if (queue.player) {
-        queue.player.removeAllListeners();
-        await queue.player.stopTrack().catch(() => {});
-      }
-    } catch (e) { /* ignore */ }
-
-    try {
-      shoukaku.leaveVoiceChannel(guildId);
-    } catch (e) { /* ignore */ }
-
-    // Bersihkan internal Shoukaku connection & player map
-    if (shoukaku.connections) {
-      shoukaku.connections.delete(guildId);
-    }
-    if (shoukaku.players) {
-      shoukaku.players.delete(guildId);
-    }
-
-    // Tunggu sebentar agar Discord voice state terupdate
-    await new Promise(r => setTimeout(r, 1500));
-
-    // === STEP 2: Join ulang voice channel di node baru (dengan fallback) ===
-    const newPlayer = await joinVoiceChannelWithFallback({
-      guildId: queue.guildId,
-      channelId: queue.voiceChannel.id,
-      shardId: 0,
-      deaf: true,
-    }, currentNodeName);
-
-    queue.player = newPlayer;
-    attachPlayerEvents(newPlayer, guildId);
-    newPlayer.setGlobalVolume(queue.volume);
-
-    // === STEP 3: Re-resolve track di node baru (KRITIS!) ===
-    // Encoded track dari NodeLink TIDAK kompatibel dengan Lavalink dan sebaliknya.
-    // Harus di-resolve ulang di node baru menggunakan query asli.
-    let encoded;
-    const originalQuery = currentSong.query || currentSong.url || currentSong.title;
-
-    if (originalQuery) {
-      try {
-        const reResolved = await searchTrack(originalQuery);
-        if (reResolved?.track) {
-          encoded = extractEncodedTrack(reResolved.track);
-          // Update track data di currentSong untuk failover berikutnya
-          currentSong.track = reResolved.track;
-        }
-      } catch (e) {
-        console.warn('⚠️ Re-resolve gagal, coba gunakan encoded track lama:', e.message);
-      }
-    }
-
-    // Fallback ke encoded track lama jika re-resolve gagal
-    if (!encoded) {
-      encoded = extractEncodedTrack(currentSong.track);
-    }
-
-    if (!encoded) {
-      throw new Error('Tidak dapat menemukan data track yang valid.');
-    }
-
-    await newPlayer.playTrack({
-      track: { encoded },
-      position: currentPos > 0 ? Math.floor(currentPos) : 0
+    // Pindahkan koneksi + putar ulang lagu yang sama di node cadangan.
+    // Helper ini juga menangani encoded track yang tidak kompatibel antar node
+    // dengan me-resolve ulang query asli.
+    const newPlayer = await reconnectShoukakuPlayer(guildId, {
+      resume: true,
+      excludeNodeName: currentNodeName,
     });
+
+    if (!newPlayer) {
+      throw new Error('Tidak dapat membuat player pengganti.');
+    }
 
     // === SUCCESS: reset failover counters ===
     queue._failoverRetries = 0;
@@ -429,10 +453,13 @@ async function handleNodeFailover(guildId, reason = 'Node Error') {
 
 /**
  * Memastikan player Shoukaku aktif dan terhubung untuk guild.
- * Jika player hilang/dead (misal karena node restart/disconnect/Player not found),
- * buat ulang player secara otomatis ke voice channel queue.
+ * Jika player hilang/dead (misal karena node restart/disconnect/"Session not
+ * found"), buat ulang player secara otomatis ke voice channel queue.
+ *
+ * `resume` dipakai command kontrol (volume/pause/resume) agar lagu yang sedang
+ * berjalan dipulihkan pada posisi terakhir setelah player dibuat ulang.
  */
-export async function ensureActivePlayer(guildId) {
+export async function ensureActivePlayer(guildId, { resume = false } = {}) {
   const queue = queues.get(guildId);
   if (!queue || !shoukaku) return null;
 
@@ -463,24 +490,7 @@ export async function ensureActivePlayer(guildId) {
   console.warn(`⚠️ Player untuk guild ${guildId} tidak ditemukan/mati di Shoukaku, menghubungkan ulang...`);
 
   try {
-    try {
-      shoukaku.leaveVoiceChannel(guildId);
-    } catch (e) {}
-
-    if (shoukaku?.connections) shoukaku.connections.delete(guildId);
-    if (shoukaku?.players) shoukaku.players.delete(guildId);
-
-    const newPlayer = await joinVoiceChannelWithFallback({
-      guildId: guildId,
-      channelId: queue.voiceChannel.id,
-      shardId: 0,
-      deaf: true,
-    });
-
-    queue.player = newPlayer;
-    attachPlayerEvents(newPlayer, guildId);
-    newPlayer.setGlobalVolume(queue.volume);
-    return newPlayer;
+    return await reconnectShoukakuPlayer(guildId, { resume: resume && Boolean(queue.currentlyPlaying) });
   } catch (err) {
     console.error(`❌ Gagal menghubungkan ulang player untuk guild ${guildId}:`, err.message);
     throw new Error(`Player tidak ditemukan & gagal terhubung kembali ke Voice Channel: ${err.message}`);
@@ -638,13 +648,10 @@ function attachPlayerEvents(player, guildId) {
     const queue = queues.get(guildId);
     if (!queue) return;
 
-    const isPlayerNotFoundError =
-      errorMsg.includes('Player not found') ||
-      errorMsg.includes('player not found') ||
-      errorMsg.includes('The player was not found');
-
-    if (isPlayerNotFoundError) {
-      handleNodeFailover(guildId, 'Player Not Found on Node');
+    // "Session not found" / player hilang = sesi node sudah tidak valid.
+    // Bangun ulang player di node lain, jangan hanya skip lagu.
+    if (isSessionError(errorMsg)) {
+      handleNodeFailover(guildId, 'Session node tidak valid (Session not found)');
       return;
     }
 
@@ -902,7 +909,7 @@ async function searchTrack(query, preferredNode = null) {
   }
 
   if (candidateNodes.length === 0) {
-    throw new Error('Tidak ada Lavalink/NodeLink node yang terhubung! Coba lagi nanti.');
+    throw new Error('Tidak ada node Lavalink yang terhubung! Coba lagi nanti.');
   }
 
   const cleanQuery = (query || '').trim();
@@ -1007,7 +1014,7 @@ async function prefetchNextTrack(queue) {
 }
 
 /**
- * Ekstraksi string base64 encoded track secara aman dari berbagai versi Lavalink/NodeLink
+ * Ekstraksi string base64 encoded track secara aman dari berbagai versi Lavalink
  */
 function extractEncodedTrack(trackObj) {
   if (!trackObj) return null;
@@ -1037,7 +1044,7 @@ export async function playMusic(interaction, query) {
     throw new Error('Bot tidak memiliki izin Connect atau Speak di channel tersebut!');
   }
 
-  // Engine native: discord.js + @discordjs/voice + youtubei.js (tanpa Lavalink/NodeLink)
+  // Engine native: discord.js + @discordjs/voice + youtubei.js (tanpa Lavalink)
   if (activeEngine === 'native') {
     return playNativeMusic(interaction, query);
   }
@@ -1096,9 +1103,12 @@ export async function playMusic(interaction, query) {
   if (needsRejoin) {
     let player;
     try {
-      try { shoukaku.leaveVoiceChannel(interaction.guildId); } catch (e) { /* belum connect */ }
+      // leaveVoiceChannel bersifat async; tunggu agar map connection benar-benar
+      // bersih sebelum join ulang (mencegah "This guild already have an existing connection").
+      try { await shoukaku.leaveVoiceChannel(interaction.guildId); } catch (e) { /* belum connect */ }
       shoukaku.connections.delete(interaction.guildId);
       shoukaku.players.delete(interaction.guildId);
+      await new Promise((resolve) => setTimeout(resolve, 300));
 
       player = await joinVoiceChannelWithFallback({
         guildId: interaction.guildId,
@@ -1218,7 +1228,7 @@ function startProgressInterval(queue) {
 /**
  * Putar satu lagu pada player Shoukaku, dengan re-resolve bila encoded tidak valid.
  */
-async function playShoukakuSong(queue, player, song) {
+async function playShoukakuSong(queue, player, song, retriedSession = false) {
   const originalQuery = song.query || song.url || song.title;
 
   let encoded = extractEncodedTrack(song.prefetchedTrack || song.track);
@@ -1238,6 +1248,15 @@ async function playShoukakuSong(queue, player, song) {
   try {
     await player.playTrack({ track: { encoded } });
   } catch (playErr) {
+    // Sesi node mati: buat player baru lalu coba sekali lagi. Re-resolve di
+    // player lama hanya akan gagal dengan error yang sama.
+    if (isSessionError(playErr) && !retriedSession) {
+      console.warn('⚠️ Session node tidak valid saat playTrack, membuat ulang player...');
+      const freshPlayer = await reconnectShoukakuPlayer(queue.guildId, { resume: false });
+      if (!freshPlayer) throw playErr;
+      return playShoukakuSong(queue, freshPlayer, song, true);
+    }
+
     if (!originalQuery) throw playErr;
 
     console.warn(`⚠️ PlayTrack error di node ${player.node?.name}, mencoba re-resolve di node aktif...`);
@@ -1278,7 +1297,7 @@ async function processQueue(guildId, initialInteraction = null) {
 
   try {
     const player = await ensureActivePlayer(guildId);
-    if (!player) throw new Error('Tidak ada player Lavalink/NodeLink yang aktif.');
+    if (!player) throw new Error('Tidak ada player Lavalink yang aktif.');
     await playShoukakuSong(queue, player, nextSong);
   } catch (err) {
     logError('Lavalink Play Error', err);
@@ -1303,7 +1322,7 @@ async function processQueue(guildId, initialInteraction = null) {
 }
 
 // ============================================
-// Native engine flow (tanpa Lavalink/NodeLink)
+// Native engine flow (tanpa Lavalink)
 // ============================================
 
 async function playNativeMusic(interaction, query) {
@@ -1482,7 +1501,9 @@ export async function skipTrack(guildId) {
     return skipped;
   }
 
-  const player = await ensureActivePlayer(guildId);
+  // Jika player/sesi sudah mati, tidak perlu join ulang hanya untuk skip:
+  // langsung majukan antrean (processQueue akan membuat player baru).
+  const player = getLivePlayer(queue);
 
   if (!player) {
     advanceQueue(guildId, { allowLoop: false });
@@ -1492,7 +1513,17 @@ export async function skipTrack(guildId) {
   // stopTrack() memicu event 'end' (reason: stopped). Flag ini membuat handler
   // memajukan antrean tanpa menerapkan loop pada lagu yang di-skip.
   queue._skipRequested = true;
-  await player.stopTrack().catch(e => console.warn(`⚠️ stopTrack error: ${e.message}`));
+  try {
+    await player.stopTrack();
+  } catch (err) {
+    if (isSessionError(err)) {
+      // Sesi node sudah mati; tidak ada event 'end' yang akan datang.
+      queue._skipRequested = false;
+      advanceQueue(guildId, { allowLoop: false });
+      return skipped;
+    }
+    console.warn(`⚠️ stopTrack error: ${err.message}`);
+  }
 
   // Fallback bila event 'end' tidak pernah datang (node lambat/mati)
   setTimeout(() => {
@@ -1541,6 +1572,53 @@ function setPauseTimestamps(queue, paused) {
   }
 }
 
+/** Player Shoukaku yang masih benar-benar hidup untuk queue ini. */
+function getLivePlayer(queue) {
+  if (!shoukaku || !queue) return null;
+  const player = shoukaku.players.get(queue.guildId);
+  if (player && queue.player === player && player.node?.state === 1) return player;
+  return null;
+}
+
+/**
+ * Pause/unpause dengan pemulihan sesi. Error "Session not found" tidak lagi
+ * membuat command menggantung atau gagal total: player dibuat ulang lalu
+ * status pause diterapkan lagi.
+ */
+async function setPlayerPausedSafely(guildId, paused) {
+  const queue = queues.get(guildId);
+  if (!queue) return;
+
+  let player = getLivePlayer(queue);
+
+  if (!player) {
+    try {
+      player = await ensureActivePlayer(guildId, { resume: true });
+    } catch (err) {
+      console.warn(`⚠️ Gagal memulihkan player untuk pause/resume: ${err.message}`);
+      return;
+    }
+  }
+
+  if (!player) return;
+
+  try {
+    await player.setPaused(paused);
+  } catch (err) {
+    if (isSessionError(err)) {
+      try {
+        const fresh = await reconnectShoukakuPlayer(guildId, { resume: true });
+        await fresh?.setPaused(paused);
+        return;
+      } catch (retryErr) {
+        console.warn(`⚠️ Gagal memulihkan sesi pause/resume: ${retryErr.message}`);
+        return;
+      }
+    }
+    console.warn(`⚠️ setPaused error: ${err.message}`);
+  }
+}
+
 export async function pauseMusic(guildId) {
   const queue = queues.get(guildId);
   if (!queue || !queue.currentlyPlaying) {
@@ -1555,10 +1633,7 @@ export async function pauseMusic(guildId) {
   if (queue.backend === 'native') {
     native.pauseNative(queue, true);
   } else {
-    const player = await ensureActivePlayer(guildId);
-    if (player) {
-      await player.setPaused(true).catch(e => console.warn(`⚠️ setPaused error: ${e.message}`));
-    }
+    await setPlayerPausedSafely(guildId, true);
   }
 
   updatePlayerMessage(guildId);
@@ -1579,10 +1654,7 @@ export async function resumeMusic(guildId) {
   if (queue.backend === 'native') {
     native.pauseNative(queue, false);
   } else {
-    const player = await ensureActivePlayer(guildId);
-    if (player) {
-      await player.setPaused(false).catch(e => console.warn(`⚠️ setPaused error: ${e.message}`));
-    }
+    await setPlayerPausedSafely(guildId, false);
   }
 
   updatePlayerMessage(guildId);
@@ -1623,13 +1695,40 @@ async function applyVolume(queue, volume) {
 
   if (queue.backend === 'native') {
     native.setNativeVolume(queue, clamped);
-  } else {
-    const player = await ensureActivePlayer(queue.guildId);
+  } else if (shoukaku) {
+    let player = getLivePlayer(queue);
+
+    // Jangan paksa rejoin kalau player masih hidup. Rejoin hanya dilakukan
+    // ketika sesi memang hilang, sehingga command volume tidak lagi membuat
+    // bot "not responding" karena menunggu koneksi voice baru.
+    if (!player) {
+      try {
+        player = await ensureActivePlayer(queue.guildId, { resume: true });
+      } catch (err) {
+        console.warn(`⚠️ Volume tersimpan, tetapi player gagal dipulihkan: ${err.message}`);
+        player = null;
+      }
+    }
+
     if (player) {
-      await player.setGlobalVolume(clamped).catch(e => console.warn(`⚠️ setGlobalVolume error: ${e.message}`));
+      try {
+        await player.setGlobalVolume(clamped);
+      } catch (err) {
+        if (isSessionError(err)) {
+          try {
+            const fresh = await reconnectShoukakuPlayer(queue.guildId, { resume: true });
+            await fresh?.setGlobalVolume(clamped);
+          } catch (retryErr) {
+            console.warn(`⚠️ Volume tersimpan, sesi gagal dipulihkan: ${retryErr.message}`);
+          }
+        } else {
+          console.warn(`⚠️ setGlobalVolume error: ${err.message}`);
+        }
+      }
     }
   }
 
+  // Update panel di background agar balasan command tidak menunggu edit pesan.
   updatePlayerMessage(queue.guildId);
   return clamped;
 }

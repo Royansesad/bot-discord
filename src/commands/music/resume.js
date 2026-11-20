@@ -16,12 +16,16 @@ export async function execute(interaction, client) {
     return interaction.reply({ embeds: [errorEmbed('❌ Error', 'Kamu harus berada di Voice Channel.')], flags: 64 });
   }
 
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply();
+  }
+
   try {
     const song = await resumeMusic(interaction.guildId);
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [successEmbed('▶️ Musik Dilanjutkan', `Pemutaran **${song.title}** dilanjutkan.`)],
     });
   } catch (error) {
-    await interaction.reply({ embeds: [errorEmbed('❌ Error', error.message)], flags: 64 });
+    await interaction.editReply({ embeds: [errorEmbed('❌ Error', error.message)] }).catch(() => {});
   }
 }

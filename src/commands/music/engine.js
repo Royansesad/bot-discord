@@ -1,4 +1,4 @@
-// /engine - Pilih & Kelola Audio Engine (Lavalink / NodeLink / Native)
+// /engine - Pilih & Kelola Audio Engine (Lavalink / Native)
 import discordJsPkg from 'discord.js';
 const { SlashCommandBuilder, EmbedBuilder } = discordJsPkg;
 import {
@@ -8,6 +8,7 @@ import {
 } from '../../services/musicService.js';
 import { getNodeInfo, getStateLabel } from '../../services/lavalinkNodes.js';
 import { detectNativeTools } from '../../services/nativeEngine.js';
+import { getProxyStatus } from '../../services/proxyManager.js';
 import { errorEmbed, successEmbed } from '../../utils/embeds.js';
 import config from '../../config.js';
 
@@ -15,7 +16,7 @@ export const category = 'music';
 
 export const data = new SlashCommandBuilder()
   .setName('engine')
-  .setDescription('Pilih atau tampilkan status Engine Audio (Lavalink / NodeLink / Native)')
+  .setDescription('Pilih atau tampilkan status Engine Audio (Lavalink / Native)')
   .addSubcommand(sub =>
     sub
       .setName('status')
@@ -32,7 +33,6 @@ export const data = new SlashCommandBuilder()
           .setRequired(true)
           .addChoices(
             { name: '🎵 Lavalink (Public Multi-Node)', value: 'lavalink' },
-            { name: '⚡ NodeLink v3.0.0', value: 'nodelink' },
             { name: '🪶 Native (discord.js + youtubei.js, tanpa cookie)', value: 'native' }
           )
       )
@@ -42,9 +42,18 @@ export async function execute(interaction, client) {
   const subcommand = interaction.options.getSubcommand();
   const currentEngine = getActiveEngine();
   const tools = detectNativeTools();
+  const proxy = getProxyStatus();
 
   if (subcommand === 'status') {
     const shoukaku = getShoukaku();
+
+    const proxyLabel = proxy.mode === 'disabled'
+      ? '`nonaktif` (YOUTUBE_PROXY_AUTO=false)'
+      : proxy.active
+        ? `\`aktif\` (${proxy.mode}: ${proxy.active})`
+        : proxy.mode === 'static'
+          ? '`menunggu` (YOUTUBE_PROXY)'
+          : '`auto` (mencari proxy sehat...)';
 
     const embed = new EmbedBuilder()
       .setColor(config.colors.primary)
@@ -52,7 +61,6 @@ export async function execute(interaction, client) {
       .setDescription(
         `Engine aktif: **\`${currentEngine.toUpperCase()}\`**\n\n` +
         '• **Lavalink** — node publik, multi-node failover\n' +
-        '• **NodeLink** — server audio ringan kompatibel Lavalink\n' +
         '• **Native** — youtubei.js + @discordjs/voice, tanpa cookie & server audio\n\n' +
         'Gunakan `/engine use` untuk berpindah engine kapan saja.'
       )
@@ -61,7 +69,7 @@ export async function execute(interaction, client) {
         value:
           `youtubei.js: ${tools.youtubei ? '`aktif` (tanpa cookie)' : '`tidak tersedia`'}\n` +
           `FFmpeg: ${tools.ffmpeg ? '`tersedia` (volume realtime)' : '`tidak ada` (Opus passthrough)'}\n` +
-          `Proxy: ${tools.proxy ? '`aktif` (YOUTUBE_PROXY)' : '`tidak diatur`'}`,
+          `Proxy: ${proxyLabel}`,
         inline: false,
       })
       .setTimestamp();
@@ -84,13 +92,13 @@ export async function execute(interaction, client) {
     } else if (currentEngine !== 'native') {
       embed.addFields({
         name: '❌ Shoukaku',
-        value: 'Sistem Lavalink/NodeLink belum diinisialisasi.',
+        value: 'Sistem Lavalink belum diinisialisasi.',
         inline: false,
       });
     }
 
     embed.setFooter({
-      text: `Engine Active: ${currentEngine.toUpperCase()} • Lavalink • NodeLink • Native`,
+      text: `Engine Active: ${currentEngine.toUpperCase()} • Lavalink • Native`,
     });
 
     return interaction.reply({ embeds: [embed] });
@@ -104,7 +112,6 @@ export async function execute(interaction, client) {
 
       const engineNames = {
         lavalink: '🎵 Lavalink (Public Multi-Node)',
-        nodelink: '⚡ NodeLink v3.0.0',
         native: '🪶 Native Engine (youtubei.js + @discordjs/voice)',
       };
 
