@@ -254,7 +254,8 @@ export async function execute(interaction, client) {
     await interaction.editReply({ embeds: [embedProcessing] });
 
     try {
-      const allScraped = await getAllNodes(client.prisma);
+      // Mode 'full' menyertakan hasil scraping provider; mode 'startup' hanya DB.
+      const allScraped = await getAllNodes(client.prisma, 'full');
 
       // Uji keaktifan semua node secara paralel
       const testedResults = await Promise.all(
@@ -348,7 +349,19 @@ export async function execute(interaction, client) {
     const name = interaction.options.getString('name');
 
     try {
-      await removeDatabaseNode(client.prisma, name);
+      let keterangan = 'database dan Shoukaku';
+
+      try {
+        await removeDatabaseNode(client.prisma, name);
+      } catch (err) {
+        // Node bawaan (hardcoded) / hasil scrape memang tidak pernah disimpan ke
+        // database, jadi /lavalink remove sebelumnya selalu gagal untuk node itu.
+        // Fallback: masukkan ke daftar node dinonaktifkan agar tidak dipakai dan
+        // tidak ditambahkan ulang oleh auto-updater selama proses bot berjalan.
+        if (!/tidak ditemukan/i.test(String(err?.message || err))) throw err;
+        disableNode(shoukaku, name);
+        keterangan = 'pool node bawaan dan Shoukaku (dinonaktifkan sampai bot restart)';
+      }
 
       if (shoukaku && shoukaku.nodes.has(name)) {
         try {
@@ -360,7 +373,7 @@ export async function execute(interaction, client) {
 
       const embed = successEmbed(
         '🗑️ Node Berhasil Dihapus',
-        `Node **${name}** telah dihapus dari database dan Shoukaku.`
+        `Node **${name}** telah dihapus dari ${keterangan}.`
       );
       return interaction.reply({ embeds: [embed] });
     } catch (err) {

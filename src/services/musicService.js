@@ -30,6 +30,34 @@ const SEARCH_TOTAL_TIMEOUT = 14000;
 // Jeda singkat ini memberi waktu koneksi stabil sebelum playTrack dipanggil.
 const VOICE_SETTLE_MS = 400;
 
+// Lavalink (khususnya node publik) mulai mengirim frame ke Discord segera setelah
+// playTrack, padahal buffer audio di server node belum terisi → detik pertama
+// tersendat dan indikator speaking berkedip. Triknya: start dalam keadaan paused,
+// beri waktu node mengisi buffer, lalu unpause. Bisa diubah lewat env.
+const LAVALINK_WARMUP_MS = Math.max(0, Number(process.env.LAVALINK_WARMUP_MS) || 1500);
+
+/**
+ * Putar track encoded dengan warm-up buffer: playTrack(paused) → tunggu → unpause.
+ * Dipakai oleh jalur play normal maupun reconnect/failover supaya perilakunya sama.
+ */
+async function playEncodedTrack(player, encoded, position = 0, stayPaused = false) {
+  await player.playTrack({ track: { encoded }, position, paused: true });
+
+  if (LAVALINK_WARMUP_MS > 0) {
+    await new Promise((resolve) => setTimeout(resolve, LAVALINK_WARMUP_MS));
+  }
+
+  if (!stayPaused) {
+    try {
+      await player.setPaused(false);
+    } catch (err) {
+      // Node bisa restart saat warm-up. Coba sekali lewat update; kalau tetap
+      // gagal, handler exception/failover yang akan menangani.
+      try { await player.update({ paused: false }); } catch { /* abaikan */ }
+    }
+  }
+}
+
 function withTimeout(promise, ms, label) {
   let timer;
   const limit = new Promise((_, reject) => {
@@ -368,8 +396,7 @@ async function reconnectShoukakuPlayer(guildId, { resume = false, excludeNodeNam
 
     if (!encoded) encoded = extractEncodedTrack(song.track);
     if (encoded) {
-      await player.playTrack({ track: { encoded }, position });
-      if (wasPaused) await player.setPaused(true).catch(() => {});
+      await playEncodedTrack(player, encoded, position, wasPaused);
     }
   }
 
@@ -1152,7 +1179,9 @@ export async function playMusic(interaction, query) {
     queue.textChannel = interaction.channel;
 
     attachPlayerEvents(player, interaction.guildId);
-    player.setGlobalVolume(queue.volume).catch(() => {});
+    // Tunggu volume terset SEBELUM playTrack supaya tidak ada dua PATCH player
+    // yang balapan (volume vs track) ketika lagu pertama mulai diputar.
+    await player.setGlobalVolume(queue.volume).catch(() => {});
   } else {
     queue.voiceChannel = voiceChannel;
     queue.textChannel = interaction.channel;
@@ -1267,7 +1296,7 @@ async function playShoukakuSong(queue, player, song, retriedSession = false) {
   }
 
   try {
-    await player.playTrack({ track: { encoded } });
+    await playEncodedTrack(player, encoded);
   } catch (playErr) {
     // Sesi node mati: buat player baru lalu coba sekali lagi. Re-resolve di
     // player lama hanya akan gagal dengan error yang sama.
@@ -1287,7 +1316,7 @@ async function playShoukakuSong(queue, player, song, retriedSession = false) {
     if (!freshEncoded) throw playErr;
 
     song.track = fresh.track;
-    await player.playTrack({ track: { encoded: freshEncoded } });
+    await playEncodedTrack(player, freshEncoded);
   }
 }
 
@@ -1320,6 +1349,12 @@ async function processQueue(guildId, initialInteraction = null) {
     const player = await ensureActivePlayer(guildId);
     if (!player) throw new Error('Tidak ada player Lavalink yang aktif.');
     await playShoukakuSong(queue, player, nextSong);
+
+    // Warm-up membuat node menahan audio ~LAVALINK_WARMUP_MS sebelum benar-benar
+    // diputar. Reset patokan waktu supaya progress bar tidak langsung melompat.
+    nextSong.startedAt = Date.now();
+    nextSong.pausedDuration = 0;
+    nextSong.lastRenderedPos = 0;
   } catch (err) {
     logError('Lavalink Play Error', err);
 

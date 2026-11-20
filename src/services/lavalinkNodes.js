@@ -5,104 +5,20 @@
 import { logError } from '../utils/errorManager.js';
 
 /**
- * Node Lavalink publik bawaan.
+ * Node bawaan TIDAK lagi disimpan hardcoded di sini.
  *
- * Daftar ini diambil dari freelavalink.serenetia.com/list (semua node yang
- * aktif saat daftar diperbarui) ditambah node bonus Trinium. Node publik bisa
- * on/off kapan saja, jadi multi-node failover tetap menjadi pengaman utama.
+ * Semua node sekarang bersumber dari database (tabel LavalinkNode) agar:
+ *   - /lavalink remove benar-benar permanen (node tidak muncul lagi saat restart)
+ *   - /lavalink add langsung tersimpan dan bertahan saat bot di-start ulang
+ *   - prioritas node bisa diubah lewat /lavalink setpriority secara persistensi
+ *
+ * Isi awal database bisa dibuat dengan:
+ *   npm run db:seed:nodes     (atau: node scripts/seed-lavalink-nodes.mjs)
+ *
+ * Node hasil scraping (mode 'full') tetap ditambahkan sementara, lalu disimpan
+ * ke database oleh auto-updater setelah lolos health check.
  */
-const HARDCODED_LAVALINK_NODES = [
-  {
-    name: 'Sereneta (SSL)',
-    url: 'lavalinkv4.serenetia.com:443',
-    auth: 'https://seretia.link/discord',
-    secure: true,
-    priority: 'main',
-    engine: 'lavalink',
-  },
-  {
-    name: 'Sereneta (HTTP)',
-    url: 'lavalinkv4.serenetia.com:80',
-    auth: 'https://seretia.link/discord',
-    secure: false,
-    priority: 'fallback',
-    engine: 'lavalink',
-  },
-  {
-    name: 'MilloHost (SSL)',
-    url: 'lava-v4.millohost.my.id:443',
-    auth: 'https://discord.gg/mjS5J2K3ep',
-    secure: true,
-    priority: 'secondary',
-    engine: 'lavalink',
-  },
-  {
-    name: 'Kasawa (Public)',
-    url: 'lava2.kasawa.pro:2334',
-    auth: 'youshallnotpass',
-    secure: false,
-    priority: 'secondary',
-    engine: 'lavalink',
-  },
-  {
-    name: 'Jirayu (SSL)',
-    url: 'lavalink.jirayu.net:443',
-    auth: 'youshallnotpass',
-    secure: true,
-    priority: 'secondary',
-    engine: 'lavalink',
-  },
-  {
-    name: 'Jirayu (13592)',
-    url: 'lavalink.jirayu.net:13592',
-    auth: 'youshallnotpass',
-    secure: false,
-    priority: 'fallback',
-    engine: 'lavalink',
-  },
-  {
-    name: 'Nazha (SSL)',
-    url: 'lavalink.nazha.online:443',
-    auth: 'nazhafreelava',
-    secure: true,
-    priority: 'secondary',
-    engine: 'lavalink',
-  },
-  {
-    name: 'Trinium (2333)',
-    url: 'lavalink.triniumhost.com:2333',
-    auth: 'kirito',
-    secure: false,
-    priority: 'fallback',
-    engine: 'lavalink',
-  },
-  {
-    name: 'Trinium (4333)',
-    url: 'lavalink.triniumhost.com:4333',
-    auth: 'free',
-    secure: false,
-    priority: 'fallback',
-    engine: 'lavalink',
-  },
-  {
-    name: 'Trinium v4 (SSL)',
-    url: 'lavalink-v4.triniumhost.com:443',
-    auth: 'free',
-    secure: true,
-    priority: 'secondary',
-    engine: 'lavalink',
-  },
-  {
-    // Identifier dari provider tetap dipertahankan, tetapi node ini kompatibel
-    // Lavalink sehingga tidak butuh engine NodeLink terpisah.
-    name: 'trinium-nodelink',
-    url: 'nodelink.triniumhost.com:443',
-    auth: 'free',
-    secure: true,
-    priority: 'secondary',
-    engine: 'lavalink',
-  },
-];
+const HARDCODED_LAVALINK_NODES = [];
 
 /**
  * URL sumber daftar node gratis dari GitHub / JSON API provider
@@ -728,6 +644,15 @@ export function startNodeAutoUpdater(shoukaku, prisma, intervalMs = 1800000) {
         try {
           shoukaku.addNode(nodeConfig);
           console.log(`🔄 Auto-added node: ${nodeConfig.name}`);
+
+          // Simpan juga ke database supaya node hasil scrape tidak hilang saat
+          // bot restart (dan bisa dihapus permanen lewat /lavalink remove).
+          try {
+            await addDatabaseNode(prisma, nodeConfig);
+            console.log(`💾 Node tersimpan di DB: ${nodeConfig.name}`);
+          } catch (e) {
+            // Sudah ada di database — abaikan.
+          }
         } catch (e) {
           failedNodeCooldowns.set(nodeConfig.name, Date.now());
         }

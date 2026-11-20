@@ -887,7 +887,15 @@ export async function startNativeSession({ guild, voiceChannel, onFinish, onErro
   }
 
   const player = createAudioPlayer({
-    behaviors: { noSubscriber: NoSubscriberBehavior.Play },
+    behaviors: {
+      noSubscriber: NoSubscriberBehavior.Play,
+      // @discordjs/voice berhenti setelah 5 frame gagal (100ms). Saat lagu baru
+      // dimulai, demuxer WebM/Ogg masih mem-parse header dan stream baru saja
+      // mengalir — gap 100ms itu membuat player masuk Idle, indikator "speaking"
+      // Discord padam, lalu lagu dianggap selesai. Beri toleransi besar supaya
+      // jeda awal tidak memutus pemutaran (silent frame tetap dikirim).
+      maxMissedFrames: 300,
+    },
   });
 
   const session = {
@@ -955,6 +963,39 @@ export function isNativeSessionAlive(session, channelId = null) {
 }
 
 /**
+ * Tunggu sampai demuxer/resource benar-benar punya frame Opus sebelum diputar.
+ * Kalau player.play() dipanggil saat resource masih "belum started", player
+ * masuk state buffering dan beberapa tick pertama bisa kehilangan frame.
+ */
+function waitForResourceReady(resource, timeoutMs = 4000) {
+  const target = resource?.playStream;
+  if (!target || resource.started) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      target.off('readable', finish);
+      target.off('error', finish);
+      target.off('close', finish);
+      resolve();
+    };
+
+    target.once('readable', finish);
+    target.once('error', finish);
+    target.once('close', finish);
+    timer = setTimeout(finish, timeoutMs);
+
+    // Picu aliran tanpa mengonsumsi frame (frame pertama disimpan untuk player).
+    target.read(0);
+  });
+}
+
+/**
  * Putar satu lagu pada sesi native yang sudah aktif.
  */
 export async function playNativeTrack(queue, song) {
@@ -973,6 +1014,10 @@ export async function playNativeTrack(queue, song) {
   if (inlineVolume && resource.volume) {
     resource.volume.setVolume(Math.min(2, Math.max(0, queue.volume / 100)));
   }
+
+  // Pastikan frame Opus pertama sudah tersedia SEBELUM play(). Tanpa ini,
+  // resource masih "not started" dan player membuang beberapa tick awal.
+  await waitForResourceReady(resource);
 
   // @discordjs/voice hanya memasang handler 'error' pada resource lama, sehingga
   // error stream (data korup / koneksi putus) bisa mematikan proses bot.
