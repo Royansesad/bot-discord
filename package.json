@@ -11,6 +11,7 @@
     "deploy": "node src/deploy-commands.js",
     "db:generate": "npx prisma generate",
     "db:push": "npx prisma db push",
+    "db:migrate:neon": "node scripts/migrate-sqlite-to-neon.mjs",
     "db:studio": "npx prisma studio",
     "setup": "npm install && npx prisma generate && npx prisma db push"
   },

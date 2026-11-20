@@ -517,6 +517,65 @@ const MEDIA_CHUNK_SIZE = 256 * 1024;
 const MEDIA_CHUNK_RETRIES = 3;
 const MEDIA_MAX_REFRESH = 2;
 
+// ============================================
+// Pre-buffer audio (Anti-stutter di awal lagu)
+// ============================================
+// @discordjs/voice membaca frame secara real-time sejak player.play() dipanggil.
+// Jika stream belum punya data (Range request pertama masih terbang lewat proxy),
+// frame awal kosong/terlambat dan terdengar "tersendat" walaupun jaringan sehat.
+// Buffer 1 MiB (= 4 potongan) membuat generator mengundang lebih awal, sedangkan
+// PREBUFFER_BYTES memastikan minimal satu potongan penuh sudah tersedia SEBELUM
+// player mulai membaca.
+const MEDIA_STREAM_HIGH_WATER_MARK = 1024 * 1024;
+const PREBUFFER_BYTES = MEDIA_CHUNK_SIZE;
+const PREBUFFER_TIMEOUT_MS = 8000;
+
+/**
+ * Tunggu sampai stream memiliki minimal `minBytes` sebelum dipakai player.
+ * Memakai mode paused + read(0) (tanpa mengonsumsi data) dan ticker berkala
+ * karena Readable.from(async generator) hanya menarik data saat diminta.
+ * Selesai lebih awal bila stream error/end/close atau timeout (fallback aman).
+ */
+function prebufferStream(stream, minBytes = PREBUFFER_BYTES, timeoutMs = PREBUFFER_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let ticker;
+    let timer;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearInterval(ticker);
+      clearTimeout(timer);
+      stream.off('readable', check);
+      stream.off('error', finish);
+      stream.off('end', finish);
+      stream.off('close', finish);
+      resolve();
+    };
+
+    const check = () => {
+      if (!settled && stream.readableLength >= minBytes) finish();
+    };
+
+    stream.on('readable', check);
+    stream.once('error', finish);
+    stream.once('end', finish);
+    stream.once('close', finish);
+
+    // read(0) memicu _read() tanpa membuang byte, jadi seluruh data tetap utuh
+    // untuk demuxer/FFmpeg setelah pre-buffer selesai.
+    ticker = setInterval(() => {
+      stream.read(0);
+      check();
+    }, 25);
+    timer = setTimeout(finish, timeoutMs);
+
+    stream.read(0);
+    check();
+  });
+}
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -677,7 +736,7 @@ function createMediaStream({ url, headers, totalLength, refresh }) {
   const controller = new AbortController();
   const stream = Readable.from(
     readMediaChunks({ url, headers, totalLength }, controller, refresh),
-    { objectMode: false }
+    { objectMode: false, highWaterMark: MEDIA_STREAM_HIGH_WATER_MARK }
   );
 
   const originalDestroy = stream.destroy.bind(stream);
@@ -721,6 +780,10 @@ async function createNativeStream(song) {
   input.on('error', (err) => {
     state.stderr = `${state.stderr}\n${err.message}`.slice(-800);
   });
+
+  // Pastikan audio sudah terisi sebelum FFmpeg/demuxer mulai membaca. Ini yang
+  // menghilangkan "tersendat" pada detik pertama lagu (bukan masalah jaringan).
+  await prebufferStream(input);
 
   if (ffmpeg) {
     // Jalur PCM: volume realtime bisa diterapkan lewat inlineVolume

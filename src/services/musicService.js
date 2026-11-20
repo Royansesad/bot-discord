@@ -24,6 +24,12 @@ import * as native from './nativeEngine.js';
 const SEARCH_REQUEST_TIMEOUT = 7000;
 const SEARCH_TOTAL_TIMEOUT = 14000;
 
+// Shoukaku menganggap voice "CONNECTED" begitu Discord mengirim SESSION_READY,
+// tetapi handshake UDP/DAVE (enkripsi voice) belum selesai. Frame pertama yang
+// dikirim terlalu cepat bisa hilang/terpotong → tersendat di awal lagu.
+// Jeda singkat ini memberi waktu koneksi stabil sebelum playTrack dipanggil.
+const VOICE_SETTLE_MS = 400;
+
 function withTimeout(promise, ms, label) {
   let timer;
   const limit = new Promise((_, reject) => {
@@ -109,7 +115,11 @@ export async function initializeShoukaku(client) {
     reconnectTries: 3,        // Dikurangi dari 10 → 3 agar tidak spam reconnect
     reconnectInterval: 15,    // Dikurangi dari 3 → 15 detik antar retry
     restTimeout: 8000,
-    frameBufferDurationMs: 5000, // Pre-buffer 5 detik (Anti-lag Spotify-style)
+    // CATATAN: `frameBufferDurationMs` BUKAN opsi Shoukaku v4 (diabaikan),
+    // jadi tidak ada pre-buffer nyata dari sisi bot. Anti-stutter ditangani
+    // lewat VOICE_SETTLE_MS di joinVoiceChannelWithFallback() dan pre-buffer
+    // stream pada engine native. Buffer Lavalink sendiri diatur di node server.
+    voiceConnectionTimeout: 15,
   });
 
   shoukaku.on('ready', (name, reconnected) => {
@@ -263,6 +273,17 @@ async function joinVoiceChannelWithFallback({ guildId, channelId, shardId = 0, d
         deaf,
         nodeName: node.name,
       });
+
+      // Tunggu voice connection benar-benar stabil sebelum frame pertama dikirim.
+      // Tanpa ini, beberapa frame awal sering hilang dan terdengar tersendat.
+      if (shoukaku.connections.get(guildId)?.state !== 1) {
+        for (let i = 0; i < 20; i++) {
+          if (shoukaku.connections.get(guildId)?.state === 1) break;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, VOICE_SETTLE_MS));
+
       return player;
     } catch (err) {
       console.warn(`⚠️ Gagal join Voice Channel via node "${node.name}": ${err.message}. Mencoba node cadangan lain...`);
