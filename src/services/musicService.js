@@ -86,6 +86,25 @@ let shoukaku = null;
 const queues = new Map();
 let activeEngine = 'lavalink'; // 'lavalink' | 'native'
 
+// PENTING: Shoukaku.joinVoiceChannel() TIDAK membaca opsi `nodeName`. Ia selalu
+// memanggil nodeResolver default (node dengan penalties terendah), sehingga
+// failover/rollover terus kembali ke node yang SAMA. Kita pasang resolver kustom
+// dan menentukan node tujuan lewat override per-guild sebelum join.
+const nodeSelectionOverride = new Map(); // guildId -> nodeName
+
+function resolveShoukakuNode(nodes, connection) {
+  const guildId = connection?.guildId;
+  const forced = guildId ? nodeSelectionOverride.get(guildId) : null;
+  if (forced) {
+    const target = nodes.get(forced);
+    if (target?.state === 1) return target;
+  }
+
+  // Fallback seperti resolver bawaan Shoukaku.
+  const connected = [...nodes.values()].filter((n) => n.state === 1);
+  return connected.sort((a, b) => (a.penalties || 0) - (b.penalties || 0))[0] || null;
+}
+
 // Engine yang memakai server audio eksternal (Shoukaku)
 export const SHOUKAKU_ENGINES = ['lavalink'];
 export const VALID_ENGINES = ['lavalink', 'native'];
@@ -148,6 +167,9 @@ export async function initializeShoukaku(client) {
     // lewat VOICE_SETTLE_MS di joinVoiceChannelWithFallback() dan pre-buffer
     // stream pada engine native. Buffer Lavalink sendiri diatur di node server.
     voiceConnectionTimeout: 15,
+    // Resolver kustom agar node yang dipilih saat join benar-benar mengikuti
+    // hasil getIdealNodes() (termasuk excludeNodeName saat failover).
+    nodeResolver: resolveShoukakuNode,
   });
 
   shoukaku.on('ready', (name, reconnected) => {
@@ -293,14 +315,22 @@ async function joinVoiceChannelWithFallback({ guildId, channelId, shardId = 0, d
   let lastError = null;
 
   for (const node of candidateNodes) {
+    // Shoukaku mengabaikan `nodeName`, jadi arahkan resolver sebelum join ke node
+    // yang sedang dicoba. Tanpa ini semua percobaan jatuh ke node yang sama.
+    nodeSelectionOverride.set(guildId, node.name);
+
     try {
       const player = await shoukaku.joinVoiceChannel({
         guildId,
         channelId,
         shardId,
         deaf,
-        nodeName: node.name,
       });
+
+      // Pastikan player benar-benar berada di node yang diminta.
+      if (player.node?.name !== node.name) {
+        throw new Error(`Node resolver memilih ${player.node?.name}, bukan ${node.name}`);
+      }
 
       // Tunggu voice connection benar-benar stabil sebelum frame pertama dikirim.
       // Tanpa ini, beberapa frame awal sering hilang dan terdengar tersendat.
@@ -317,6 +347,13 @@ async function joinVoiceChannelWithFallback({ guildId, channelId, shardId = 0, d
       console.warn(`⚠️ Gagal join Voice Channel via node "${node.name}": ${err.message}. Mencoba node cadangan lain...`);
       addNodePenalty(node, 10);
       lastError = err;
+
+      // Bersihkan koneksi/player yang setengah jadi sebelum coba node berikutnya.
+      try { await shoukaku.leaveVoiceChannel(guildId); } catch { /* abaikan */ }
+      shoukaku.connections.delete(guildId);
+      shoukaku.players.delete(guildId);
+    } finally {
+      nodeSelectionOverride.delete(guildId);
     }
   }
 
@@ -668,10 +705,32 @@ function attachPlayerEvents(player, guildId) {
   player.on('end', (data) => {
     const queue = queues.get(guildId);
     if (!queue) return;
-    if (queue._failoverInProgress) return;
 
-    // 'replaced' berarti track baru sudah diputar; antrean jangan dimajukan
-    if (data?.reason === 'replaced') return;
+    // Lavalink mengirim reason HURUF BESAR (FINISHED / STOPPED / REPLACED /
+    // LOAD_FAILED). Perbandingan huruf kecil sebelumnya tidak pernah cocok,
+    // sehingga event 'REPLACED' dari track lama ikut memajukan antrean.
+    const reason = String(data?.reason || '').toUpperCase();
+    if (reason === 'REPLACED') return;
+
+    // Abaikan event 'end' dari track yang bukan lagi lagu aktif (event usang
+    // bisa datang setelah failover / playTrack berikutnya).
+    const endedTrack = data?.track?.encoded || data?.track;
+    const currentTracks = [
+      extractEncodedTrack(queue.currentlyPlaying?.track),
+      extractEncodedTrack(queue.currentlyPlaying?.prefetchedTrack),
+    ].filter(Boolean);
+    if (endedTrack && currentTracks.length > 0 && !currentTracks.includes(endedTrack)) {
+      console.warn(`[end] event usang diabaikan (${reason}).`);
+      return;
+    }
+
+    // Flag failover yang menggantung jangan sampai memblokir antrean selamanya.
+    if (queue._failoverInProgress) queue._failoverInProgress = false;
+
+    // Anti double-advance: dua event 'end' dalam waktu singkat hanya diproses sekali.
+    const now = Date.now();
+    if (queue._lastAdvanceAt && now - queue._lastAdvanceAt < 1000) return;
+    queue._lastAdvanceAt = now;
 
     if (queue._skipRequested) {
       queue._skipRequested = false;
@@ -679,8 +738,8 @@ function attachPlayerEvents(player, guildId) {
       return;
     }
 
-    // 'stopped' (skip/stop) tetap harus memajukan antrean; 'loadFailed' jangan di-loop
-    advanceQueue(guildId, { allowLoop: data?.reason !== 'loadFailed' });
+    // 'STOPPED' (skip/stop) tetap memajukan antrean; 'LOAD_FAILED' jangan di-loop.
+    advanceQueue(guildId, { allowLoop: reason !== 'LOAD_FAILED' });
   });
 
   player.on('exception', (data) => {
@@ -1269,8 +1328,22 @@ function startProgressInterval(queue) {
   if (queue.progressInterval) clearInterval(queue.progressInterval);
   queue.progressInterval = setInterval(() => {
     const current = queues.get(guildId);
-    if (current?.currentlyPlaying && !current.isPaused) {
-      updatePlayerMessage(guildId);
+    if (!current?.currentlyPlaying || current.isPaused) return;
+
+    updatePlayerMessage(guildId);
+
+    // Watchdog: jika event 'end' tidak pernah datang (node lama / packet loss)
+    // lagu bisa "mentok" selamanya dan panel tetap menampilkan lagu sebelumnya.
+    // Saat waktu putar melewati durasi + 5 detik, paksa majukan antrean.
+    const song = current.currentlyPlaying;
+    const duration = Number(song.durationMs) || 0;
+    if (duration > 0 && song.startedAt && !current._failoverInProgress) {
+      const elapsed = Date.now() - song.startedAt - (song.pausedDuration || 0);
+      if (elapsed > duration + 5000) {
+        console.warn(`[watchdog] "${song.title}" dianggap selesai, memajukan antrean.`);
+        current._lastAdvanceAt = Date.now();
+        advanceQueue(guildId, { allowLoop: false });
+      }
     }
   }, 2000);
 }
