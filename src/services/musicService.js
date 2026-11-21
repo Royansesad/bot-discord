@@ -151,7 +151,25 @@ const DEFAULT_BANNER = "https://i.postimg.cc/7Z52mQ0K/Amba-Music.png";
  * Inisialisasi Shoukaku
  */
 export async function initializeShoukaku(client) {
-  const rawNodes = await getAllNodes(client.prisma);
+  // Database (Neon) bisa sedang bangun dari idle saat bot start sehingga query
+  // pertama gagal. Coba beberapa kali sebelum menyimpulkan node tidak tersedia,
+  // agar fitur musik tidak mati permanen hanya karena cold start.
+  let rawNodes = [];
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      rawNodes = await getAllNodes(client.prisma);
+    } catch (err) {
+      rawNodes = [];
+      logError(`Lavalink Node Load (percobaan ${attempt}/3)`, err);
+    }
+
+    if (rawNodes.length > 0) break;
+    if (attempt < 3) {
+      console.warn(`⚠️ Belum ada node Lavalink yang terbaca (percobaan ${attempt}/3), mencoba lagi...`);
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+    }
+  }
+
   const nodes = formatForShoukaku(rawNodes);
 
   if (nodes.length === 0) {

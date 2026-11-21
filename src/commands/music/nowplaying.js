@@ -27,7 +27,7 @@ export async function execute(interaction, client) {
     .addFields(
       { name: '🎤 Artis', value: song.author || 'Unknown', inline: true },
       { name: '⏱️ Durasi', value: song.isStream ? '🔴 LIVE' : song.duration, inline: true },
-      { name: '👤 Peminta', value: `<@${song.requester.id}>`, inline: true },
+      { name: '👤 Peminta', value: `<@${song.requester?.id || '0'}>`, inline: true },
       { name: '🔊 Volume', value: `${queue.volume}%`, inline: true },
       { name: '📜 Sisa Antrean', value: `${queue.songs.length} lagu`, inline: true }
     )

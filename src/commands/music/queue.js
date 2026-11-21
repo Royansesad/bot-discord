@@ -20,11 +20,11 @@ export async function execute(interaction, client) {
 
   const current = queue.currentlyPlaying;
   const currentStr = current
-    ? `▶️ **[${current.title}](${current.url})** | \`${current.duration}\` | <@${current.requester.id}>${queue.isPaused ? ' *(Paused)*' : ''}`
+    ? `▶️ **[${current.title}](${current.url})** | \`${current.duration}\` | <@${current.requester?.id || '0'}>${queue.isPaused ? ' *(Paused)*' : ''}`
     : 'Tidak ada lagu sedang diputar';
 
   const songList = queue.songs.slice(0, 10).map((song, i) => {
-    return `**${i + 1}.** [${song.title}](${song.url}) | \`${song.duration}\` | <@${song.requester.id}>`;
+    return `**${i + 1}.** [${song.title}](${song.url}) | \`${song.duration}\` | <@${song.requester?.id || '0'}>`;
   });
 
   const remaining = queue.songs.length > 10 ? `\n*...dan ${queue.songs.length - 10} lagu lainnya.*` : '';

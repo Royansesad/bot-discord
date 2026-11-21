@@ -29,7 +29,15 @@ export async function execute(interaction, client) {
     const totalCost = item.buyPrice * quantity;
     if (player.gold < totalCost) return interaction.reply({ embeds: [errorEmbed('❌', `Gold tidak cukup! Butuh 🪙 ${formatNumber(totalCost)}, kamu punya 🪙 ${formatNumber(player.gold)}`)], flags: 64 });
 
-    await spendGold(client.prisma, player.id, totalCost);
+    // spendGold memvalidasi ulang saldo di database. Jika gagal (mis. dua
+    // pembelian berjalan bersamaan), item TIDAK boleh diberikan gratis.
+    const paid = await spendGold(client.prisma, player.id, totalCost);
+    if (!paid) {
+      return interaction.reply({
+        embeds: [errorEmbed('❌', 'Gold tidak cukup! Saldo kamu berubah saat transaksi diproses.')],
+        flags: 64,
+      });
+    }
     await addItem(client.prisma, player.id, buyItemId, quantity);
 
     return interaction.reply({

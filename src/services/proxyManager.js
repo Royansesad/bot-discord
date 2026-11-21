@@ -26,6 +26,10 @@ const PROXY_SOURCES = [
   'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt',
   'https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt',
   'https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt',
+  // Daftar proxy yang mendukung HTTPS CONNECT (lebih relevan untuk YouTube).
+  'https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/https/data.txt',
+  // API dengan filter "baru dicek" (JSON: data[].ip + port).
+  'https://proxylist.geonode.com/api/proxy-list?limit=200&page=1&sort_by=lastChecked&sort_type=desc&protocols=http%2Chttps',
   // API yang mengembalikan proxy baru tiap request (JSON: data[].ipPort / ip+port).
   'http://pubproxy.com/api/proxy?limit=10',
 ];
@@ -38,11 +42,18 @@ const TEST_TARGETS = [
 ];
 
 const SOURCE_TIMEOUT_MS = 9000;
-const TEST_TIMEOUT_MS = 3500;
-const TEST_CONCURRENCY = 24;
-const MAX_CANDIDATES = 120;
+// Proxy gratis butuh waktu handshake lebih longgar; sebelumnya 3.5s membuat
+// proxy yang lambat (tapi hidup) ikut gagal.
+const TEST_TIMEOUT_MS = 5000;
+const TEST_CONCURRENCY = 60;
+// Ambil lebih banyak kandidat lalu acak: 120 kandidat pertama selalu berasal
+// dari kepala daftar yang sudah mati, sehingga tidak pernah ada yang lolos.
+const MAX_CANDIDATES = 600;
 const POOL_MAX = 8;
 const REFRESH_TTL_MS = 10 * 60 * 1000;
+// Jika tidak ada proxy yang lolos, jangan diam 10 menit: coba lagi lebih cepat.
+const NO_PROXY_RETRY_MS = 2 * 60 * 1000;
+const DIRECT_PROBE_TTL_MS = 60 * 1000;
 
 let staticProxy = normalizeProxy(process.env.YOUTUBE_PROXY);
 let activeUrl = null;
@@ -51,6 +62,11 @@ let pool = [];
 let lastRefresh = 0;
 let lastError = null;
 let refreshPromise = null;
+
+// Status koneksi langsung (tanpa proxy). Jika YouTube DAN host media
+// (googlevideo) bisa dijangkau langsung, proxy tidak diperlukan sama sekali.
+let directProbe = { checkedAt: 0, youtube: false, googleVideo: false };
+let directProbePromise = null;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -187,7 +203,79 @@ export function getProxyStatus() {
     poolSize: pool.length,
     lastRefresh: lastRefresh ? new Date(lastRefresh).toISOString() : null,
     lastError,
+    direct: {
+      youtube: directProbe.youtube,
+      googleVideo: directProbe.googleVideo,
+      checkedAt: directProbe.checkedAt ? new Date(directProbe.checkedAt).toISOString() : null,
+    },
   };
+}
+
+function tcpReachable(host, port, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    const socket = netConnect({ host, port });
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+  });
+}
+
+async function probeDirectOnce() {
+  let youtube = false;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch('https://www.youtube.com/generate_204', {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'DiscordBot-ProxyProbe/1.0' },
+    });
+    await response.body?.cancel().catch(() => {});
+    youtube = response.status > 0 && response.status < 500;
+  } catch {
+    youtube = false;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  // Host media YouTube. Jika ini bisa dijangkau langsung, proxy tidak perlu.
+  const googleVideo = youtube ? await tcpReachable('googlevideo.com', 443, 4000) : false;
+
+  directProbe = { checkedAt: Date.now(), youtube, googleVideo };
+  return directProbe;
+}
+
+/**
+ * Cek apakah koneksi langsung (tanpa proxy) bisa menjangkau YouTube dan host
+ * media-nya. Hasil di-cache 60 detik agar tidak menambah delay setiap request.
+ */
+export async function probeDirect({ force = false } = {}) {
+  if (!force && directProbe.checkedAt && Date.now() - directProbe.checkedAt < DIRECT_PROBE_TTL_MS) {
+    return directProbe;
+  }
+
+  if (!directProbePromise) {
+    directProbePromise = probeDirectOnce().finally(() => {
+      directProbePromise = null;
+    });
+  }
+
+  return directProbePromise;
+}
+
+function probeDirectWithin(ms) {
+  return Promise.race([
+    probeDirect(),
+    new Promise((resolve) => setTimeout(() => resolve(directProbe), ms)),
+  ]);
 }
 
 function setActive(url) {
@@ -213,6 +301,13 @@ function extractProxyLines(payload) {
     for (const item of payload) {
       if (typeof item === 'string') lines.push(item);
       else if (item && typeof item === 'object') {
+        // Sebagian API memakai { ip, port }, sebagian { ipPort: "ip:port" },
+        // sebagian { proxy: "ip:port" } (pubproxy).
+        const hostPort = item.ipPort || item.proxy || item.ip_port;
+        if (typeof hostPort === 'string' && hostPort.includes(':')) {
+          lines.push(hostPort);
+          continue;
+        }
         const host = item.host || item.ip || item.address;
         const port = item.port;
         if (host && port) lines.push(`${host}:${port}`);
@@ -293,14 +388,19 @@ async function collectCandidates() {
 
   for (const result of results) {
     if (result.status !== 'fulfilled') continue;
-    for (const proxy of result.value) {
-      unique.add(proxy);
-      if (unique.size >= MAX_CANDIDATES) break;
-    }
-    if (unique.size >= MAX_CANDIDATES) break;
+    for (const proxy of result.value) unique.add(proxy);
   }
 
-  return [...unique];
+  const candidates = [...unique];
+
+  // Acak sebelum dibatasi: kandidat dari kepala daftar publik hampir selalu
+  // sudah mati, sehingga tanpa pengacakan tidak ada yang pernah lolos uji.
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+
+  return candidates.slice(0, MAX_CANDIDATES);
 }
 
 /**
@@ -359,14 +459,11 @@ function canReachGoogleVideo(proxyUrl) {
   });
 }
 
-async function testProxy(proxyUrl) {
+/** Uji satu proxy: apakah bisa mengambil HTTPS YouTube? */
+async function fetchViaProxy(proxyUrl) {
   let dispatcher;
 
   try {
-    // Filter cepat dulu: kalau googlevideo tidak bisa dijangkau, proxy ini tidak
-    // berguna untuk engine native meski youtube.com bisa diakses.
-    if (!(await canReachGoogleVideo(proxyUrl))) return false;
-
     dispatcher = createDispatcher(proxyUrl, {
       connectTimeout: TEST_TIMEOUT_MS,
       headersTimeout: TEST_TIMEOUT_MS,
@@ -391,7 +488,7 @@ async function testProxy(proxyUrl) {
 
         await response.body?.cancel().catch(() => {});
 
-        if (response.status === 200 || response.status === 204) return true;
+        if (response.status >= 200 && response.status < 400) return true;
       } catch {
         // coba target berikutnya
       } finally {
@@ -407,6 +504,20 @@ async function testProxy(proxyUrl) {
   }
 }
 
+/**
+ * Uji proxy. YouTube diuji lebih dulu (murah); kemampuan CONNECT ke
+ * googlevideo hanya dipakai sebagai NILAI TAMBAHAN, bukan syarat mutlak.
+ * Sebelumnya syarat CONNECT ini membuang 100% proxy publik yang sebenarnya
+ * bisa dipakai untuk pencarian YouTube.
+ */
+async function testProxy(proxyUrl) {
+  const youtubeOk = await fetchViaProxy(proxyUrl);
+  if (!youtubeOk) return { ok: false, video: false };
+
+  const video = await canReachGoogleVideo(proxyUrl);
+  return { ok: true, video };
+}
+
 async function findWorkingProxies(candidates) {
   const working = [];
   let index = 0;
@@ -414,27 +525,38 @@ async function findWorkingProxies(candidates) {
   const workers = Array.from(
     { length: Math.min(TEST_CONCURRENCY, candidates.length) },
     async () => {
-      while (index < candidates.length && working.length < POOL_MAX) {
+      while (index < candidates.length) {
+        // Ambil lebih dari POOL_MAX lalu urutkan: proxy yang bisa menjangkau
+        // googlevideo dipakai lebih dulu untuk streaming media.
+        if (working.length >= POOL_MAX * 2) break;
         const proxy = candidates[index++];
-        if (await testProxy(proxy)) {
-          // Beberapa worker bisa selesai bersamaan; cek lagi sebelum push agar
-          // pool tidak melebihi batas.
-          if (working.length >= POOL_MAX) break;
-          working.push(proxy);
-          console.log(`✅ Proxy lolos uji YouTube: ${maskProxy(proxy)} (${working.length}/${POOL_MAX})`);
+        const result = await testProxy(proxy);
+        if (result.ok) {
+          if (working.length >= POOL_MAX * 2) break;
+          working.push({ url: proxy, video: result.video });
+          console.log(
+            `✅ Proxy lolos uji YouTube: ${maskProxy(proxy)}` +
+            `${result.video ? ' (+googlevideo)' : ''} (${working.length})`
+          );
         }
       }
     }
   );
 
   await Promise.all(workers);
-  return working;
+
+  working.sort((a, b) => Number(b.video) - Number(a.video));
+  return working.slice(0, POOL_MAX);
 }
 
 async function refreshPool() {
   lastRefresh = Date.now();
 
   try {
+    // Probe koneksi langsung bisa selesai setelah race 3 detik. Jika ternyata
+    // sehat, batalkan scraping ratusan proxy yang tidak diperlukan.
+    if (directProbe.youtube && directProbe.googleVideo) return;
+
     const candidates = await collectCandidates();
 
     if (candidates.length === 0) {
@@ -455,11 +577,24 @@ async function refreshPool() {
       return;
     }
 
-    pool = working;
+    const urls = working.map((item) => item.url);
+    pool = urls;
     lastError = null;
 
-    if (!activeUrl || !working.includes(activeUrl)) {
-      setActive(working[0]);
+    const videoCapable = working.filter((item) => item.video).length;
+    console.log(`✅ Auto proxy: ${urls.length} proxy lolos uji (${videoCapable} bisa menjangkau googlevideo).`);
+
+    // Probe langsung bisa selesai saat scan berjalan. Jika koneksi langsung
+    // ternyata sehat, JANGAN aktifkan proxy: proxy publik yang lambat akan
+    // memperlambat pencarian/pemutaran tanpa manfaat.
+    if (directProbe.youtube && directProbe.googleVideo) {
+      console.log('🌐 Koneksi langsung sehat — proxy disimpan di pool tetapi tidak diaktifkan.');
+      if (activeUrl) setActive(null);
+      return;
+    }
+
+    if (!activeUrl || !urls.includes(activeUrl)) {
+      setActive(urls[0]);
     }
   } catch (err) {
     lastError = err?.message || String(err);
@@ -488,9 +623,23 @@ export async function ensureProxyReady({ force = false, waitMs = 8000 } = {}) {
     return activeUrl;
   }
 
+  // Periksa koneksi langsung lebih dulu. Jika YouTube DAN host media bisa
+  // dijangkau tanpa proxy, proxy tidak diperlukan sama sekali — ini mencegah
+  // bot menunggu 35 detik men-scan ratusan proxy mati setiap kali start.
+  const direct = await probeDirectWithin(Math.min(waitMs, 3000));
+  if (direct.youtube && direct.googleVideo) {
+    if (activeUrl) setActive(null);
+    pool = [];
+    lastError = null;
+    lastRefresh = Date.now();
+    return null;
+  }
+
   // Refresh terakhir sudah selesai (termasuk gagal) dan belum kedaluwarsa:
-  // jangan mengulang health-check di setiap request.
-  if (!force && !refreshPromise && lastRefresh && (Date.now() - lastRefresh) < REFRESH_TTL_MS) {
+  // jangan mengulang health-check di setiap request. Saat tidak ada proxy
+  // yang lolos, coba lagi lebih cepat (2 menit), bukan 10 menit.
+  const retryWindow = pool.length > 0 ? REFRESH_TTL_MS : NO_PROXY_RETRY_MS;
+  if (!force && !refreshPromise && lastRefresh && (Date.now() - lastRefresh) < retryWindow) {
     return activeUrl;
   }
 
@@ -501,7 +650,10 @@ export async function ensureProxyReady({ force = false, waitMs = 8000 } = {}) {
   }
 
   if (waitMs > 0) {
-    await Promise.race([refreshPromise, delay(waitMs)]);
+    // Jangan menahan command menunggu scan 600 proxy (bisa >1 menit). Scan
+    // tetap berjalan di background; request memakai koneksi langsung sampai
+    // proxy sehat tersedia.
+    await Promise.race([refreshPromise, delay(Math.min(waitMs, 1500))]);
   }
 
   return activeUrl;
@@ -511,6 +663,21 @@ export async function ensureProxyReady({ force = false, waitMs = 8000 } = {}) {
  * Laporkan proxy aktif yang gagal. Proxy dibuang dari pool lalu diganti dengan
  * kandidat sehat berikutnya. Refresh baru dijadwalkan jika pool habis.
  */
+/**
+ * Aktifkan proxy dari pool saat koneksi langsung gagal mengambil media
+ * (mis. googlevideo diblokir/DNS di-hijack). Mengembalikan true jika proxy
+ * berhasil diaktifkan.
+ */
+export function activatePooledProxy() {
+  if (staticProxy || activeUrl || pool.length === 0) return false;
+
+  setActive(pool[0]);
+  // Tandai segar supaya ensureProxyReady tidak langsung melepasnya kembali.
+  lastRefresh = Date.now();
+  console.log(`🌐 Proxy dari pool diaktifkan untuk media: ${maskProxy(pool[0])}`);
+  return true;
+}
+
 export function reportProxyFailure(url = activeUrl) {
   if (!url || url !== activeUrl) return;
   if (staticProxy) {
@@ -546,8 +713,6 @@ export function warmProxy() {
     return Promise.resolve(null);
   }
 
-  console.log('🌐 Auto proxy native: mencari proxy sehat untuk YouTube di background...');
-
   // Auto-scraping berkala: proxy gratis cepat kedaluwarsa. Refresh paksa tiap
   // TTL supaya pool selalu berisi kandidat baru tanpa menunggu ada lagu gagal.
   if (!autoRefreshTimer) {
@@ -558,5 +723,18 @@ export function warmProxy() {
     autoRefreshTimer.unref?.();
   }
 
-  return ensureProxyReady({ waitMs: 0 }).catch(() => null);
+  // Cek koneksi langsung dulu: jika sehat, engine native berjalan tanpa proxy
+  // (lebih cepat dan lebih stabil daripada proxy publik gratis).
+  return probeDirect()
+    .then((probe) => {
+      if (probe.youtube && probe.googleVideo) {
+        console.log('🌐 Koneksi langsung YouTube + googlevideo sehat — auto proxy tidak diperlukan.');
+        lastRefresh = Date.now();
+        return null;
+      }
+
+      console.log('🌐 Koneksi langsung tidak lengkap — mencari proxy sehat di background...');
+      return ensureProxyReady({ waitMs: 0 }).catch(() => null);
+    })
+    .catch(() => ensureProxyReady({ waitMs: 0 }).catch(() => null));
 }

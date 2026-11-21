@@ -12,8 +12,10 @@
 // ============================================
 import { spawn, spawnSync } from 'node:child_process';
 import { Readable } from 'node:stream';
+import { Agent } from 'undici';
 import { Innertube, Parser, Platform } from 'youtubei.js';
 import {
+  activatePooledProxy,
   ensureProxyReady,
   getActiveProxyUrl,
   getProxyDispatcher,
@@ -72,9 +74,25 @@ const tools = {
 // YOUTUBE_PROXY tetap didukung sebagai override manual. Tanpa itu, proxy
 // diambil & diuji otomatis dari sumber publik, lalu dipakai untuk request API
 // YouTube maupun unduhan media (host googlevideo yang diblokir ISP).
+// Host media googlevideo (dan cache ISP-nya) kadang butuh >10 detik untuk
+// menerima koneksi, sementara undici default connectTimeout hanya 10 detik —
+// setiap percobaan langsung dianggap gagal padahal percobaan berikutnya bisa
+// sukses dalam ~100ms. Dispatcher langsung ini memberi waktu lebih longgar.
+// Catatan: percobaan pertama ke host media sering timeout ~10 detik (jalur/ISP
+// "cold start"), lalu percobaan berikutnya sukses dalam ~10 ms. Karena itu
+// connectTimeout dibuat pendek (6 detik) + retry cepat, dan keep-alive panjang
+// agar semua potongan 256 KiB memakai socket yang sama tanpa pemanasan ulang.
+const directDispatcher = new Agent({
+  connectTimeout: 6_000,
+  headersTimeout: 20_000,
+  bodyTimeout: 0,
+  keepAliveTimeout: 60_000,
+  keepAliveMaxTimeout: 120_000,
+  connections: 8,
+});
+
 function proxiedFetch(input, init) {
-  const dispatcher = getProxyDispatcher();
-  if (!dispatcher) return fetch(input, init);
+  const dispatcher = getProxyDispatcher() || directDispatcher;
 
   return fetch(input, { ...init, dispatcher }).catch((err) => {
     // Abort dari timeout internal bukan bukti proxy mati.
@@ -241,6 +259,115 @@ function assertPlayable(info) {
 }
 
 /**
+ * Jalankan operasi jaringan; jika gagal saat proxy aktif, buang proxy tersebut
+ * lalu coba sekali lagi (proxy berikutnya atau koneksi langsung).
+ * Tanpa ini, satu proxy yang mati membuat pencarian gagal total sampai TTL
+ * proxy berikutnya (10 menit).
+ */
+async function withProxyRecovery(operation, label) {
+  try {
+    return await operation();
+  } catch (error) {
+    const failedProxy = getActiveProxyUrl();
+    if (!failedProxy) throw error;
+
+    console.warn(`⚠️ ${label} gagal lewat proxy ${failedProxy}; mencoba ulang...`);
+    reportProxyFailure(failedProxy);
+
+    return operation();
+  }
+}
+
+/** Ambil video ID dari item hasil pencarian youtubei.js lintas versi/layout. */
+function extractVideoIdFromItem(item) {
+  if (!item) return null;
+
+  // youtubei.js kadang hanya mengisi `id`, kadang `video_id` (tergantung
+  // layout response YouTube). Sebelumnya kode hanya membaca `video_id`,
+  // sehingga hasil pencarian yang valid dianggap "Lagu tidak ditemukan".
+  const direct = item.video_id || item.id || item.content_id;
+  if (typeof direct === 'string' && /^[A-Za-z0-9_-]{11}$/.test(direct)) return direct;
+
+  const candidates = [
+    item.endpoint?.payload?.videoId,
+    item.endpoint?.metadata?.videoId,
+    item.endpoint?.metadata?.url,
+    item.thumbnail?.url,
+    item.thumbnails?.[0]?.url,
+  ];
+
+  for (const value of candidates) {
+    const fromUrl = parseYouTubeId(value);
+    if (fromUrl) return fromUrl;
+
+    const viMatch = String(value || '').match(/\/vi\/([A-Za-z0-9_-]{11})\//);
+    if (viMatch) return viMatch[1];
+  }
+
+  return null;
+}
+
+/**
+ * Normalisasi hasil pencarian menjadi daftar lagu yang bisa diputar.
+ * Item tanpa ID dilewati; live stream ditandai agar bisa dilewati.
+ */
+function normalizeSearchResults(results) {
+  const items = (results?.videos?.length ? results.videos : results?.results) || [];
+  const videos = [];
+
+  for (const item of items) {
+    const id = extractVideoIdFromItem(item);
+    if (!id) continue;
+
+    const seconds = Number(item.duration?.seconds) || 0;
+    videos.push({
+      id,
+      title: item.title?.toString?.() || item.title?.text || 'Unknown',
+      author: item.author?.name || 'Unknown',
+      durationMs: seconds > 0 ? seconds * 1000 : 0,
+      // Durasi 0 pada hasil pencarian menandakan live/premiere.
+      isLive: Boolean(item.is_live) || seconds === 0,
+      thumbnail: item.best_thumbnail?.url || pickThumbnail(item.thumbnails),
+    });
+  }
+
+  return videos;
+}
+
+/**
+ * Ambil metadata video yang benar-benar bisa diputar, mencoba klien streaming
+ * satu per satu. `WEB` sengaja tidak dipakai karena sekarang sering dibalas
+ * bot-check ("The page needs to be reloaded").
+ */
+async function getPlayableInfo(videoId) {
+  const failures = [];
+
+  for (const clientType of STREAM_CLIENTS) {
+    try {
+      const client = await getStreamClient(clientType);
+      const info = await withProxyRecovery(
+        () => client.getBasicInfo(videoId),
+        `Pengambilan info video (${clientType})`
+      );
+
+      const status = info?.playability_status?.status;
+      if (status && status !== 'OK') {
+        failures.push(`${clientType}: ${shortError(info.playability_status?.reason || status)}`);
+        continue;
+      }
+
+      return info;
+    } catch (err) {
+      failures.push(`${clientType}: ${shortError(err)}`);
+    }
+  }
+
+  throw new Error(
+    `Gagal mengambil info video: ${failures.slice(-2).join(' | ') || 'tidak ada klien yang merespons'}`
+  );
+}
+
+/**
  * Cari lagu via youtubei.js (URL YouTube maupun kata kunci).
  * Hasil kompatibel dengan struktur songInfo yang dipakai musicService.
  */
@@ -264,12 +391,11 @@ export async function searchNative(query) {
   let video;
 
   if (videoId) {
-    let info;
-    try {
-      info = await yt.getBasicInfo(videoId);
-    } catch (err) {
-      throw new Error(`Gagal mengambil info video: ${shortError(err)}`);
-    }
+    // Klien WEB hanya dipakai untuk pencarian: getBasicInfo(WEB) sekarang
+    // dibalas "The page needs to be reloaded" (bot-check) -> video URL apa pun
+    // dianggap tidak bisa diputar. Metadata diambil lewat klien streaming
+    // (VISIONOS/ANDROID_VR/WEB_REMIX) yang masih memberikan status OK.
+    const info = await getPlayableInfo(videoId);
     assertPlayable(info);
 
     const basic = info.basic_info || {};
@@ -284,21 +410,30 @@ export async function searchNative(query) {
   } else {
     let results;
     try {
-      results = await yt.search(clean, { type: 'video' });
+      results = await withProxyRecovery(() => yt.search(clean, { type: 'video' }), 'Pencarian YouTube');
     } catch (err) {
       throw new Error(`Pencarian YouTube gagal: ${shortError(err)}`);
     }
 
-    const first = results.videos?.[0] || results.results?.find((item) => item.video_id);
-    if (!first) throw new Error('Lagu tidak ditemukan.');
+    const candidates = normalizeSearchResults(results);
+    if (candidates.length === 0) {
+      throw new Error(
+        'YouTube tidak mengembalikan hasil pencarian. Coba kata kunci lain, ' +
+        'atau periksa koneksi/proxy (YOUTUBE_PROXY / YOUTUBE_PROXY_AUTO).'
+      );
+    }
+
+    // Hasil teratas sering kali live stream (mis. "lofi hip hop radio") yang
+    // belum didukung engine native. Pilih video biasa terlebih dahulu.
+    const chosen = candidates.find((item) => !item.isLive) || candidates[0];
 
     video = {
-      id: first.video_id,
-      title: first.title?.toString() || 'Unknown',
-      author: first.author?.name || 'Unknown',
-      duration: Number(first.duration?.seconds) || 0,
-      isLive: Boolean(first.is_live),
-      thumbnail: first.best_thumbnail?.url || pickThumbnail(first.thumbnails),
+      id: chosen.id,
+      title: chosen.title,
+      author: chosen.author,
+      duration: Math.round(chosen.durationMs / 1000),
+      isLive: chosen.isLive,
+      thumbnail: chosen.thumbnail,
     };
   }
 
@@ -352,8 +487,10 @@ async function openAudioSource(videoId, preferredClient = null) {
   const usingProxy = isProxyActive();
 
   // Batasi total waktu percobaan agar command musik tidak menggantung lama.
-  // Proxy (terutama WARP) bisa lebih lambat saat koneksi pertama.
-  const deadline = Date.now() + (usingProxy ? 25000 : 15000);
+  // Koneksi langsung ke host media bisa lambat/flaky (beberapa percobaan
+  // timeout sebelum satu berhasil), jadi beri anggaran lebih besar daripada
+  // sebelumnya (15 detik terlalu cepat untuk jaringan seperti ini).
+  const deadline = Date.now() + 45000;
 
   const clientOrder = preferredClient
     ? [preferredClient, ...STREAM_CLIENTS.filter((c) => c !== preferredClient)]
@@ -439,12 +576,20 @@ async function openAudioSource(videoId, preferredClient = null) {
       };
 
       // Koneksi ke host googlevideo kadang gagal sesaat (timeout/ECONNRESET),
-      // jadi tiap URL dicoba dua kali sebelum pindah ke format berikutnya.
-      for (let attempt = 0; attempt < 2; attempt++) {
+      // jadi tiap URL dicoba beberapa kali sebelum pindah ke format berikutnya.
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 1000) break;
+        if (attempt > 0) await delay(250);
+
         // Batasi hanya saat menunggu response headers; body tidak boleh di-abort
-        // karena streaming bisa berjalan lebih lama dari timeout.
+        // karena streaming bisa berjalan lebih lama dari timeout. Jangan pernah
+        // melebihi sisa anggaran waktu keseluruhan.
         const controller = new AbortController();
-        const connectTimer = setTimeout(() => controller.abort(), usingProxy ? 25000 : 12000);
+        const connectTimer = setTimeout(
+          () => controller.abort(),
+          Math.min(usingProxy ? 20000 : 8000, remaining)
+        );
 
         let response;
         try {
@@ -471,14 +616,22 @@ async function openAudioSource(videoId, preferredClient = null) {
           break;
         }
 
-        await response.body.cancel().catch(() => {});
+        // JANGAN buang body ini: dipakai langsung sebagai byte audio pertama.
+        // Membuangnya memaksa koneksi kedua yang di jaringan ini sering
+        // "cold start" (beberapa kali timeout) sehingga playback gagal.
+        const isPartial = response.status === 206;
 
         return {
           url,
           headers,
           ext: audioContainerFromMime(format.mime_type).ext,
-          totalLength: Number(format.content_length) || 0,
+          totalLength: isPartial
+            ? (Number(format.content_length) || totalFromContentRange(response.headers.get('content-range')) || 0)
+            : (Number(response.headers.get('content-length')) || Number(format.content_length) || 0),
           clientType,
+          initialBody: response.body,
+          // 200 = server mengabaikan Range dan mengirim seluruh file.
+          fullBody: !isPartial,
         };
       }
     }
@@ -514,7 +667,7 @@ async function openAudioSource(videoId, preferredClient = null) {
 // 256 KiB sudah cukup untuk menjaga throughput sekaligus membatasi memori puncak
 // per potongan (dulu 512 KiB, yang berlipat ganda saat ada beberapa retry).
 const MEDIA_CHUNK_SIZE = 256 * 1024;
-const MEDIA_CHUNK_RETRIES = 3;
+const MEDIA_CHUNK_RETRIES = 6;
 const MEDIA_MAX_REFRESH = 2;
 
 // ============================================
@@ -590,9 +743,11 @@ function totalFromContentRange(value) {
  * Generator potongan media. Berhenti saat total tercapai, potongan lebih pendek
  * dari yang diminta (akhir file), HTTP 416, atau stream di-destroy.
  */
-async function* readMediaChunks({ url, headers, totalLength }, controller, refresh) {
+async function* readMediaChunks({ url, headers, totalLength, initialBody = null, fullBody = false }, controller, refresh) {
   const usingProxy = isProxyActive();
-  const headerTimeout = usingProxy ? 25000 : 12000;
+  // Cukup pendek agar percobaan yang macet cepat diulang; socket keep-alive
+  // membuat percobaan berikutnya biasanya hanya butuh beberapa milidetik.
+  const headerTimeout = usingProxy ? 20000 : 10000;
 
   let source = {
     url,
@@ -604,6 +759,26 @@ async function* readMediaChunks({ url, headers, totalLength }, controller, refre
   let refreshCount = 0;
 
   try {
+    // Pakai body dari request uji 1 KiB yang SUDAH berhasil. Ini menghindari
+    // koneksi kedua yang sering timeout beberapa kali sebelum berhasil, dan
+    // membuat pemutaran mulai dalam milidetik setelah URL didapat.
+    if (initialBody) {
+      const reader = initialBody.getReader();
+      try {
+        while (!controller.signal.aborted) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value || !value.byteLength) continue;
+          offset += value.byteLength;
+          yield Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+        }
+      } finally {
+        try { await reader.cancel(); } catch { /* abaikan */ }
+      }
+
+      if (fullBody) return;
+    }
+
     while (!controller.signal.aborted) {
       const total = source.totalLength;
       if (total > 0 && offset >= total) return;
@@ -732,10 +907,10 @@ async function* readMediaChunks({ url, headers, totalLength }, controller, refre
  * Buat Readable audio dari URL googlevideo memakai potongan Range berurutan.
  * destroy() pada stream langsung membatalkan request yang sedang berjalan.
  */
-function createMediaStream({ url, headers, totalLength, refresh }) {
+function createMediaStream({ url, headers, totalLength, initialBody, fullBody, refresh }) {
   const controller = new AbortController();
   const stream = Readable.from(
-    readMediaChunks({ url, headers, totalLength }, controller, refresh),
+    readMediaChunks({ url, headers, totalLength, initialBody, fullBody }, controller, refresh),
     { objectMode: false, highWaterMark: MEDIA_STREAM_HIGH_WATER_MARK }
   );
 
@@ -766,13 +941,29 @@ async function createNativeStream(song) {
   const videoId = song?.track?.id;
   if (!videoId) throw new Error('ID audio tidak valid.');
 
-  const { url, headers, ext, totalLength, clientType } = await openAudioSource(videoId);
+  let source;
+  try {
+    source = await openAudioSource(videoId);
+  } catch (error) {
+    // Koneksi langsung bisa "terlihat sehat" (DNS di-hijack) tetapi host media
+    // tetap gagal. Jika pool proxy punya kandidat, aktifkan lalu coba sekali lagi.
+    if (!isProxyActive() && activatePooledProxy()) {
+      console.warn('⚠️ Media gagal diakses langsung; mencoba lewat proxy dari pool...');
+      source = await openAudioSource(videoId);
+    } else {
+      throw error;
+    }
+  }
+
+  const { url, headers, ext, totalLength, clientType, initialBody, fullBody } = source;
   const state = { stderr: '' };
 
   const input = createMediaStream({
     url,
     headers,
     totalLength,
+    initialBody,
+    fullBody,
     // URL media bisa kedaluwarsa saat lagu panjang; minta URL baru dari klien
     // yang sama supaya potongan berikutnya tetap bisa diunduh.
     refresh: () => openAudioSource(videoId, clientType),
@@ -1067,6 +1258,97 @@ export async function playNativeTrack(queue, song) {
       primary.once('close', onClose);
     }
   });
+}
+
+/**
+ * Diagnostik pemutaran native TANPA voice connection.
+ *
+ * Memutar resource melalui AudioPlayer sungguhan (`noSubscriber: Play`) dan
+ * melaporkan apakah player mencapai status Playing serta berapa lama frame
+ * audio benar-benar terpakai. Ini menguji jalur lengkap: pencarian URL media →
+ * Range request/proxy → pre-buffer → demuxer OPUS atau FFmpeg → AudioPlayer.
+ * Yang TIDAK diuji hanya pengiriman paket ke Discord (butuh voice channel).
+ */
+export async function probeNativeAudio(song, { minPlaybackMs = 1500, timeoutMs = 30000 } = {}) {
+  const startedAt = Date.now();
+  const toolsInfo = detectNativeTools();
+
+  let created;
+  try {
+    created = await createNativeStream(song);
+  } catch (err) {
+    // Gagal menyiapkan media (mis. semua host CDN timeout) bukan crash:
+    // laporkan sebagai hasil probe biasa agar pemanggil bisa memutuskan
+    // fallback tanpa exception yang tidak tertangani.
+    return {
+      reachedPlaying: false,
+      playbackDurationMs: 0,
+      error: shortError(err),
+      inputType: null,
+      inlineVolume: false,
+      ffmpeg: toolsInfo.ffmpeg,
+      elapsedMs: Date.now() - startedAt,
+      stderr: null,
+    };
+  }
+
+  const { type, stream, children, inlineVolume, state } = created;
+  const resource = createAudioResource(stream, { inputType: type, inlineVolume });
+
+  const player = createAudioPlayer({
+    behaviors: {
+      noSubscriber: NoSubscriberBehavior.Play,
+      maxMissedFrames: 300,
+    },
+  });
+
+  let playerError = null;
+  let reachedPlaying = false;
+  player.on('error', (err) => {
+    playerError = err;
+  });
+
+  const result = await new Promise((resolve) => {
+    let settled = false;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      player.off('stateChange', onState);
+      try { player.stop(true); } catch { /* abaikan */ }
+      resolve({
+        reachedPlaying,
+        playbackDurationMs: resource.playbackDuration || 0,
+        error: playerError ? shortError(playerError) : null,
+      });
+    };
+
+    const onState = (_oldState, newState) => {
+      if (newState.status === AudioPlayerStatus.Playing) {
+        reachedPlaying = true;
+        // Biarkan beberapa frame benar-benar terpakai sebelum menyimpulkan.
+        setTimeout(finish, minPlaybackMs);
+      } else if (newState.status === AudioPlayerStatus.Idle && !reachedPlaying) {
+        finish();
+      }
+    };
+
+    const timer = setTimeout(finish, timeoutMs);
+    player.on('stateChange', onState);
+    player.play(resource);
+  });
+
+  for (const handle of children || []) closeHandle(handle);
+
+  return {
+    ...result,
+    inputType: type,
+    inlineVolume,
+    ffmpeg: toolsInfo.ffmpeg,
+    elapsedMs: Date.now() - startedAt,
+    stderr: (state?.stderr || '').trim().split(/\r?\n/).filter(Boolean).pop() || null,
+  };
 }
 
 /**

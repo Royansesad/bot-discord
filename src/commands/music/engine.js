@@ -47,13 +47,16 @@ export async function execute(interaction, client) {
   if (subcommand === 'status') {
     const shoukaku = getShoukaku();
 
+    const directHealthy = proxy.direct?.youtube && proxy.direct?.googleVideo;
     const proxyLabel = proxy.mode === 'disabled'
       ? '`nonaktif` (YOUTUBE_PROXY_AUTO=false)'
       : proxy.active
         ? `\`aktif\` (${proxy.mode}: ${proxy.active})`
-        : proxy.mode === 'static'
-          ? '`menunggu` (YOUTUBE_PROXY)'
-          : '`auto` (mencari proxy sehat...)';
+        : directHealthy
+          ? '`koneksi langsung` (YouTube + googlevideo sehat)'
+          : proxy.mode === 'static'
+            ? '`menunggu` (YOUTUBE_PROXY)'
+            : '`auto` (mencari proxy sehat...)';
 
     const embed = new EmbedBuilder()
       .setColor(config.colors.primary)

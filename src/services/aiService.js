@@ -68,12 +68,15 @@ export async function chatCompletion(prisma, userId, userMessage) {
   // Pastikan puter diinisialisasi sebelum digunakan
   await initPuter();
 
-  // Ambil context dari database
-  const contextRecords = await prisma.chatContext.findMany({
+  // Ambil context dari database. Ambil yang TERBARU dulu lalu balik urutannya:
+  // dengan `asc + take` yang terambil selalu pesan paling awal, sehingga AI
+  // tidak pernah melihat percakapan terakhir.
+  const recentContext = await prisma.chatContext.findMany({
     where: { userId },
-    orderBy: { createdAt: 'asc' },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     take: MAX_CONTEXT_MESSAGES,
   });
+  const contextRecords = recentContext.reverse();
 
   const messages = [
     {

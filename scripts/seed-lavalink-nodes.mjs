@@ -9,6 +9,7 @@
 // ============================================
 import 'dotenv/config';
 import prismaPkg from '@prisma/client';
+import { normalizeDatabaseUrl } from '../src/utils/dbUrl.js';
 
 const { PrismaClient } = prismaPkg;
 
@@ -22,7 +23,9 @@ const NODES = [
   { name: 'Nazha (SSL)', url: 'lavalink.nazha.online:443', auth: 'nazhafreelava', secure: true, priority: 'secondary' },
 ];
 
-const prisma = new PrismaClient();
+// connect_timeout dinaikkan agar Neon yang sedang idle/suspended sempat bangun
+// (default Prisma 5 detik -> error "Can't reach database server").
+const prisma = new PrismaClient({ datasourceUrl: normalizeDatabaseUrl() });
 
 try {
   for (const node of NODES) {

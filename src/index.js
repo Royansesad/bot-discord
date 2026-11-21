@@ -3,8 +3,6 @@
 // ============================================
 import discordJsPkg from 'discord.js';
 const { Client, GatewayIntentBits, Collection, Partials } = discordJsPkg;
-import prismaPkg from '@prisma/client';
-const { PrismaClient } = prismaPkg;
 import config from './config.js';
 import { loadCommands } from './handlers/commandLoader.js';
 import { handleInteraction } from './events/interactionCreate.js';
@@ -13,9 +11,11 @@ import { logError } from './utils/errorManager.js';
 import { initializeShoukaku, cleanupAll, getActiveEngine } from './services/musicService.js';
 import { detectNativeTools } from './services/nativeEngine.js';
 import { warmProxy } from './services/proxyManager.js';
+import { createResilientPrisma, connectDatabase } from './services/database.js';
 
-// Inisialisasi Prisma client
-const prisma = new PrismaClient();
+// Inisialisasi Prisma client dengan retry otomatis untuk koneksi Neon yang
+// sempat idle/suspended (penyebab error "Can't reach database server").
+const prisma = createResilientPrisma();
 
 // Inisialisasi Discord client dengan intents yang diperlukan
 const client = new Client({
@@ -31,6 +31,11 @@ const client = new Client({
 
 // Attach prisma ke client agar bisa diakses dari command
 client.prisma = prisma;
+
+// Pastikan database siap sebelum node Lavalink dibaca dari database.
+// Neon butuh ~5-7 detik untuk bangun dari idle; connectDatabase memberi waktu
+// itu (dan tidak menghentikan bot bila tetap gagal).
+await connectDatabase(prisma);
 
 // Collection untuk menyimpan commands
 client.commands = new Collection();
@@ -76,7 +81,11 @@ client.once('ready', () => {
 });
 
 // Event: Interaction (slash commands, buttons, etc.)
-client.on('interactionCreate', (interaction) => handleInteraction(client, interaction));
+client.on('interactionCreate', (interaction) => {
+  handleInteraction(client, interaction).catch((error) => {
+    logError('Interaction Handler', error);
+  });
+});
 
 // Global error handling via Error Manager
 client.on('error', (error) => {
@@ -95,13 +104,21 @@ process.on('uncaughtException', (error) => {
   logError('Uncaught Exception', error);
 });
 
-process.on('SIGINT', async () => {
-  console.log('🔄 Shutting down...');
-  cleanupAll(); // Cleanup Lavalink connections
-  await prisma.$disconnect();
-  client.destroy();
+let shuttingDown = false;
+async function shutdown(signal = 'SIGINT') {
+  // Cegah shutdown ganda (SIGINT lalu SIGTERM) yang bisa membuat proses macet.
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  console.log(`🔄 Shutting down (${signal})...`);
+  try { cleanupAll(); } catch (error) { logError('Cleanup', error); } // Cleanup Lavalink connections
+  try { await prisma.$disconnect(); } catch (error) { logError('Database Disconnect', error); }
+  try { client.destroy(); } catch { /* sudah tertutup */ }
   process.exit(0);
-});
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 // Login — setelah Shoukaku terdaftar, baru login
 // Ketika client ready, Shoukaku connector otomatis catch 'clientReady' dan connect ke nodes

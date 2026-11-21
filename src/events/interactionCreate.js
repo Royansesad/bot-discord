@@ -6,7 +6,7 @@ import discordJsPkg from 'discord.js';
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = discordJsPkg;
 import { checkCooldown, setCooldown } from '../utils/cooldown.js';
 import { errorEmbed, successEmbed } from '../utils/embeds.js';
-import { handleCommandError, logError } from '../utils/errorManager.js';
+import { handleCommandError, logError, isInteractionExpired } from '../utils/errorManager.js';
 import {
   getQueue,
   togglePauseMusic,
@@ -28,6 +28,84 @@ import config from '../config.js';
 // Map untuk menyimpan active message collectors pencarian musik per user
 const activeSearchCollectors = new Map();
 
+// Discord hanya memberi ~3 detik untuk acknowledge interaction. Query database
+// pertama setelah Neon idle bisa memakan 5-7 detik, sehingga interaction
+// kedaluwarsa sebelum dibalas ("Unknown interaction"). Batas internal dibuat
+// lebih kecil agar defer selalu sempat terkirim.
+const INTERACTION_ACK_DEADLINE_MS = 2800;
+
+/** Hapus flag ephemeral saat payload reply harus dikirim lewat editReply. */
+function stripEphemeralFlag(payload, interaction) {
+  if (!payload || typeof payload !== 'object' || interaction.ephemeral) return payload;
+  const { flags, ...rest } = payload;
+  return rest;
+}
+
+/**
+ * Pasang pengaman batas waktu interaction:
+ *  - deferReply otomatis sebelum 3 detik bila command belum membalas,
+ *  - reply() otomatis dialihkan ke editReply() bila sudah di-acknowledge,
+ *  - deferReply() tidak melempar error "already acknowledged".
+ *
+ * Ini mencegah bug "interaction kedaluwarsa sebelum dibalas" tanpa perlu
+ * mengubah setiap command.
+ */
+export function guardInteractionDeadline(interaction) {
+  if (interaction.__deadlineGuarded) return interaction;
+  interaction.__deadlineGuarded = true;
+
+  const age = Date.now() - (interaction.createdTimestamp || Date.now());
+  const deferDelay = Math.max(250, INTERACTION_ACK_DEADLINE_MS - age - 500);
+
+  let ackTimer = setTimeout(() => {
+    ackTimer = null;
+    if (interaction.deferred || interaction.replied) return;
+    interaction.deferReply().catch(() => {});
+  }, deferDelay);
+  ackTimer.unref?.();
+
+  const clearTimer = () => {
+    if (ackTimer) {
+      clearTimeout(ackTimer);
+      ackTimer = null;
+    }
+  };
+
+  const originalReply = interaction.reply.bind(interaction);
+  const originalDeferReply = interaction.deferReply.bind(interaction);
+  const originalEditReply = interaction.editReply.bind(interaction);
+  const originalFollowUp = interaction.followUp.bind(interaction);
+
+  interaction.deferReply = async (options) => {
+    clearTimer();
+    if (interaction.deferred || interaction.replied) return;
+    return originalDeferReply(options);
+  };
+
+  interaction.reply = async (payload) => {
+    clearTimer();
+    try {
+      return await originalReply(payload);
+    } catch (error) {
+      if (error?.code !== 40060 && !isInteractionExpired(error)) throw error;
+      if (!interaction.deferred && !interaction.replied) throw error;
+      return originalEditReply(stripEphemeralFlag(payload, interaction));
+    }
+  };
+
+  interaction.editReply = async (payload) => {
+    clearTimer();
+    return originalEditReply(payload);
+  };
+
+  interaction.followUp = async (payload) => {
+    clearTimer();
+    return originalFollowUp(payload);
+  };
+
+  return interaction;
+}
+
 /**
  * Handler utama untuk semua interaction (slash commands, buttons, autocomplete)
  */
@@ -46,6 +124,7 @@ export async function handleInteraction(client, interaction) {
 
   // Handle Button Interactions (Remote Control & Dashboard)
   if (interaction.isButton()) {
+    guardInteractionDeadline(interaction);
     if (interaction.customId.startsWith('btn_music_')) {
       return handleMusicButton(client, interaction);
     }
@@ -57,6 +136,10 @@ export async function handleInteraction(client, interaction) {
 
   const command = client.commands.get(interaction.commandName);
   if (!command) return;
+
+  // Ack interaction lebih awal (lihat guardInteractionDeadline) supaya query
+  // database yang lambat tidak membuat token interaction kedaluwarsa.
+  guardInteractionDeadline(interaction);
 
   try {
     // Interaction hanya punya ~3 detik untuk di-acknowledge. Jika event masuk
@@ -386,13 +469,16 @@ async function handleMusicButton(client, interaction) {
         if (queue?.backend === 'native') {
           const tools = detectNativeTools();
           const proxy = getProxyStatus();
+          const directHealthy = proxy.direct?.youtube && proxy.direct?.googleVideo;
           const proxyLabel = proxy.mode === 'disabled'
             ? '`nonaktif`'
             : proxy.active
               ? `\`aktif\` (${proxy.mode})`
-              : proxy.mode === 'static'
-                ? '`menunggu`'
-                : '`auto` (mencari proxy...)';
+              : directHealthy
+                ? '`koneksi langsung`'
+                : proxy.mode === 'static'
+                  ? '`menunggu`'
+                  : '`auto` (mencari proxy...)';
 
           const embed = new EmbedBuilder()
             .setColor(config.colors.info)

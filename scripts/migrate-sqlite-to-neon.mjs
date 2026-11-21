@@ -16,6 +16,7 @@ import 'dotenv/config';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import prismaPkg from '@prisma/client';
+import { normalizeDatabaseUrl } from '../src/utils/dbUrl.js';
 
 const { PrismaClient } = prismaPkg;
 
@@ -67,7 +68,8 @@ function normalizeRow(table, row) {
 
 async function main() {
   const sqlite = new DatabaseSync(sqlitePath, { readOnly: true });
-  const prisma = new PrismaClient();
+  // Neon bisa sedang idle saat migrasi dijalankan: beri waktu wake-up lebih lama.
+  const prisma = new PrismaClient({ datasourceUrl: normalizeDatabaseUrl() });
 
   try {
     console.log(`📂 SQLite sumber : ${sqlitePath}`);

@@ -56,26 +56,32 @@ export async function execute(interaction, client) {
   if (!item) return interaction.reply({ embeds: [errorEmbed('❌', 'Item tidak ditemukan.')], flags: 64 });
   if (item.type !== 'consumable') return interaction.reply({ embeds: [errorEmbed('❌', 'Item ini bukan consumable. Gunakan `/equip` untuk weapon/armor.')], flags: 64 });
 
+  // Item tanpa efek tidak boleh dikonsumsi (dulu item hilang tanpa hasil).
+  const effect = item.effect || {};
+  if (!effect.heal && !effect.healFull && !effect.permAttack && !effect.permDefense) {
+    return interaction.reply({ embeds: [errorEmbed('❌', 'Item ini tidak memiliki efek yang bisa dipakai.')], flags: 64 });
+  }
+
   const removed = await removeItem(client.prisma, player.id, itemId, 1);
   if (!removed) return interaction.reply({ embeds: [errorEmbed('❌', 'Kamu tidak memiliki item ini.')], flags: 64 });
 
   const effects = [];
 
-  if (item.effect.heal) {
-    await healPlayer(client.prisma, player.id, item.effect.heal);
-    effects.push(`❤️ +${item.effect.heal} HP`);
+  if (effect.heal) {
+    await healPlayer(client.prisma, player.id, effect.heal);
+    effects.push(`❤️ +${effect.heal} HP`);
   }
-  if (item.effect.healFull) {
+  if (effect.healFull) {
     await client.prisma.player.update({ where: { id: player.id }, data: { hp: player.maxHp } });
     effects.push('❤️ HP penuh!');
   }
-  if (item.effect.permAttack) {
-    await client.prisma.player.update({ where: { id: player.id }, data: { attack: { increment: item.effect.permAttack } } });
-    effects.push(`⚔️ +${item.effect.permAttack} ATK (permanen)`);
+  if (effect.permAttack) {
+    await client.prisma.player.update({ where: { id: player.id }, data: { attack: { increment: effect.permAttack } } });
+    effects.push(`⚔️ +${effect.permAttack} ATK (permanen)`);
   }
-  if (item.effect.permDefense) {
-    await client.prisma.player.update({ where: { id: player.id }, data: { defense: { increment: item.effect.permDefense } } });
-    effects.push(`🛡️ +${item.effect.permDefense} DEF (permanen)`);
+  if (effect.permDefense) {
+    await client.prisma.player.update({ where: { id: player.id }, data: { defense: { increment: effect.permDefense } } });
+    effects.push(`🛡️ +${effect.permDefense} DEF (permanen)`);
   }
 
   await interaction.reply({

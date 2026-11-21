@@ -274,12 +274,23 @@ export async function runInteractiveBattle(interaction, playerStats, enemy, colo
 
   // Battle loop via collector
   return new Promise((resolve) => {
+    // `finish` menjamin promise selalu selesai. Tanpa ini, collector yang
+    // berhenti karena alasan lain (pesan/channel dihapus, bot restart) membuat
+    // command menggantung selamanya dan HP player tidak pernah disimpan.
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
     const collector = msg.createMessageComponentCollector({
       filter: (i) => i.user.id === interaction.user.id && i.customId.endsWith(uniqueId),
       time: 120_000, // 2 menit timeout
     });
 
     collector.on('collect', async (btnInteraction) => {
+      try {
       const action = btnInteraction.customId.startsWith('battle_attack') ? 'attack'
         : btnInteraction.customId.startsWith('battle_defend') ? 'defend'
         : 'flee';
@@ -297,7 +308,7 @@ export async function runInteractiveBattle(interaction, playerStats, enemy, colo
             .setTimestamp();
           await btnInteraction.update({ embeds: [fleeEmbed], components: [] });
           collector.stop('fled');
-          return resolve({ won: false, fled: true, remainingHp: playerHp, log: fullLog, turns: turn });
+          return finish({ won: false, fled: true, remainingHp: playerHp, log: fullLog, turns: turn });
         } else {
           // Gagal kabur, enemy menyerang
           turn++;
@@ -333,7 +344,7 @@ export async function runInteractiveBattle(interaction, playerStats, enemy, colo
             defeatEmbed.setColor(colors.danger).setTitle(`💀 Turn ${turn} — Kalah!`);
             await btnInteraction.update({ embeds: [defeatEmbed], components: [] });
             collector.stop('defeat');
-            return resolve({ won: false, fled: false, remainingHp: 0, log: fullLog, turns: turn });
+            return finish({ won: false, fled: false, remainingHp: 0, log: fullLog, turns: turn });
           }
 
           const embed = buildBattleEmbed(playerStats, enemy, playerHp, enemyHp, turn, turnLog, fullLog, colors, fxState);
@@ -359,7 +370,7 @@ export async function runInteractiveBattle(interaction, playerStats, enemy, colo
         finalEmbed.setTitle(result.won ? `🎉 Turn ${turn} — Victory!` : `💀 Turn ${turn} — Kalah!`);
         await btnInteraction.update({ embeds: [finalEmbed], components: [] });
         collector.stop('finished');
-        return resolve({
+        return finish({
           won: result.won,
           fled: false,
           remainingHp: Math.max(0, playerHp),
@@ -371,6 +382,13 @@ export async function runInteractiveBattle(interaction, playerStats, enemy, colo
       // Show current state
       const embed = buildBattleEmbed(playerStats, enemy, playerHp, enemyHp, turn, result.log, fullLog, colors, fxState);
       await btnInteraction.update({ embeds: [embed], components: [buildBattleButtons(uniqueId)] });
+      } catch (err) {
+        // Tombol bisa kedaluwarsa / pesan sudah dihapus. Jangan biarkan handler
+        // async ini menjadi unhandled rejection atau menggantungkan battle.
+        console.error('Battle interaction error:', err?.message || err);
+        try { collector.stop('error'); } catch { /* abaikan */ }
+        finish({ won: false, fled: true, remainingHp: Math.max(0, playerHp), log: fullLog, turns: turn });
+      }
     });
 
     collector.on('end', (_, reason) => {
@@ -382,8 +400,18 @@ export async function runInteractiveBattle(interaction, playerStats, enemy, colo
           .setDescription(`Kamu terlalu lama tidak bertindak. **${enemy.name}** pergi meninggalkanmu.`)
           .setTimestamp();
         interaction.editReply({ embeds: [timeoutEmbed], components: [] }).catch(() => {});
-        resolve({ won: false, fled: true, remainingHp: playerHp, log: fullLog, turns: turn });
+        finish({ won: false, fled: true, remainingHp: Math.max(0, playerHp), log: fullLog, turns: turn });
+        return;
       }
+
+      // 'fled'/'finished'/'defeat'/'error' sudah diselesaikan oleh handler
+      // collect. collector.stop() memicu 'end' secara sinkron, jadi jangan
+      // menimpa hasil akhir (mis. victory) dengan hasil default di sini.
+      if (['fled', 'finished', 'defeat', 'error'].includes(reason)) return;
+
+      // Alasan lain (pesan/channel dihapus, bot shutdown): selesaikan promise
+      // agar HP player tetap tersimpan dan cooldown tidak macet.
+      finish({ won: false, fled: true, remainingHp: Math.max(0, playerHp), log: fullLog, turns: turn });
     });
   });
 }
